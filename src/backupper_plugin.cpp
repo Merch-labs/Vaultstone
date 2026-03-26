@@ -8,18 +8,20 @@ ENDSTONE_PLUGIN("backupper", "0.1.0", BackupperPlugin)
 
     command("backupper")
         .description("Manage world backups.")
-        .usages("/backupper status", "/backupper backup [label: string]", "/backupper reload", "/backupper list [limit: int]",
-                "/backupper prune", "/backupper delete <name: string>", "/backupper schedule <status|start|stop>")
+        .usages("/backupper status", "/backupper backup [label: string]", "/backupper restore <name|latest>",
+                "/backupper reload", "/backupper list [limit: int]", "/backupper prune", "/backupper delete <name: string>",
+                "/backupper schedule <status|start|stop>")
         .aliases("backup")
         .permissions("backupper.command.status", "backupper.command.backup", "backupper.command.reload",
-                     "backupper.command.list", "backupper.command.prune", "backupper.command.delete",
-                     "backupper.command.schedule");
+                     "backupper.command.restore", "backupper.command.list", "backupper.command.prune",
+                     "backupper.command.delete", "backupper.command.schedule");
 
     permission("backupper.command")
         .description("Allows access to all Backupper commands.")
         .children("backupper.command.status", true)
         .children("backupper.command.backup", true)
         .children("backupper.command.reload", true)
+        .children("backupper.command.restore", true)
         .children("backupper.command.list", true)
         .children("backupper.command.prune", true)
         .children("backupper.command.delete", true)
@@ -35,6 +37,10 @@ ENDSTONE_PLUGIN("backupper", "0.1.0", BackupperPlugin)
 
     permission("backupper.command.reload")
         .description("Allows reloading the Backupper config.")
+        .default_(endstone::PermissionDefault::Operator);
+
+    permission("backupper.command.restore")
+        .description("Allows restoring a stored backup.")
         .default_(endstone::PermissionDefault::Operator);
 
     permission("backupper.command.list")
@@ -115,6 +121,20 @@ bool BackupperPlugin::onCommand(endstone::CommandSender &sender, const endstone:
         return true;
     }
 
+    if (subcommand == "restore") {
+        if (args.size() < 2) {
+            sender.sendErrorMessage("Usage: /backupper restore <name|latest>");
+            return true;
+        }
+        std::string error;
+        if (!manager_->startRestore(sender.getName(), args[1], error)) {
+            sender.sendErrorMessage("Unable to start restore: {}", error);
+            return true;
+        }
+        sender.sendMessage("Restore started for '{}'.", args[1]);
+        return true;
+    }
+
     if (subcommand == "list") {
         const auto limit = args.size() > 1 ? static_cast<std::size_t>(std::max(1, std::stoi(args[1]))) : 10U;
         const auto backups = manager_->listBackups(limit);
@@ -181,6 +201,6 @@ bool BackupperPlugin::onCommand(endstone::CommandSender &sender, const endstone:
         return true;
     }
 
-    sender.sendErrorMessage("Usage: /backupper <status|backup|reload|list|prune|delete|schedule>");
+    sender.sendErrorMessage("Usage: /backupper <status|backup|restore|reload|list|prune|delete|schedule>");
     return true;
 }

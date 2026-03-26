@@ -48,6 +48,7 @@ public:
 
     bool reload(std::string &error);
     bool startManualBackup(const std::string &requested_by, const std::string &label, std::string &error);
+    bool startRestore(const std::string &requested_by, const std::string &backup_selector, std::string &error);
     bool startSchedule(std::string &error);
     bool stopSchedule(std::string &error);
     void sendStatus(endstone::CommandSender &sender) const;
@@ -66,6 +67,7 @@ private:
         std::string label;
         std::string level_name;
         std::string requested_by;
+        std::string shutdown_delay_seconds;
         std::string time;
         std::string timestamp;
         std::string trigger;
@@ -85,6 +87,25 @@ private:
         std::string error;
         BackupSummary summary;
         std::size_t removed_count = 0;
+    };
+
+    struct RestoreContext {
+        BackupConfig config;
+        StoredBackup backup;
+        std::string requested_by;
+        std::filesystem::path server_root;
+        std::filesystem::path temp_root;
+        TemplateValues values;
+        int save_query_attempts = 0;
+        bool save_hold_active = false;
+    };
+
+    struct RestoreResult {
+        bool ok = false;
+        std::string error;
+        std::string backup_name;
+        std::size_t restored_files = 0;
+        std::size_t removed_paths = 0;
     };
 
     struct BackupContext {
@@ -109,6 +130,7 @@ private:
     void loadConfigOrThrow();
     bool startBackupRequest(const std::string &trigger, const std::string &requested_by, const std::string &label,
                             std::string &error);
+    bool startRestoreRequest(const std::string &requested_by, const StoredBackup &backup, std::string &error);
     void beginBackup(std::shared_ptr<BackupContext> context);
     void onSaveQueryTick();
     void onPhaseMonitorTick();
@@ -120,16 +142,33 @@ private:
     void queueStartupBackupIfNeeded();
     bool startScheduledBackup(const std::string &trigger, std::string &error);
     bool shouldSkipScheduledBackup(std::string &reason) const;
+    void updateScheduleAfterSuccessfulBackup(const BackupSummary &summary);
+    void updateScheduleAfterSuccessfulRestore();
+    void restartIntervalScheduleFrom(const std::chrono::system_clock::time_point &time_point);
+    void persistRuntimeState() const;
+    void clearRuntimeState();
+    void maybeRunMissedIntervalBackupOnStartup(const std::chrono::system_clock::time_point &persisted_next_run);
+    [[nodiscard]] std::optional<std::chrono::system_clock::time_point> loadPersistedIntervalRun() const;
+    [[nodiscard]] std::chrono::system_clock::time_point computeNextClockRun(
+        const std::chrono::system_clock::time_point &after) const;
+    [[nodiscard]] std::vector<int> parseClockTimesLocal() const;
+    [[nodiscard]] std::optional<StoredBackup> findBackup(const std::string &selector) const;
     void finishFailure(const std::string &error);
+    void finishRestoreFailure(const std::string &error);
     void finishSuccess(const FinalizeResult &result);
+    void finishRestoreSuccess(const RestoreResult &result);
     void resumeSaveIfNeeded();
+    void resumeRestoreSaveIfNeeded();
     void broadcastMessage(const std::string &message) const;
     void broadcastFailure(const TemplateValues &values, const std::string &error) const;
     void broadcastSuccess(const BackupSummary &summary) const;
+    void broadcastRestoreFailure(const TemplateValues &values, const std::string &error) const;
+    void broadcastRestoreSuccess(const TemplateValues &values) const;
 
     [[nodiscard]] bool isBusy() const;
     [[nodiscard]] std::filesystem::path getServerRoot() const;
     [[nodiscard]] std::filesystem::path getConfigPath() const;
+    [[nodiscard]] std::filesystem::path getStatePath() const;
     [[nodiscard]] std::string readLevelName() const;
     [[nodiscard]] TemplateValues buildTemplateValues(const std::string &trigger, const std::string &requested_by,
                                                      const std::string &label) const;
@@ -147,10 +186,12 @@ private:
 
     static SnapshotResult createSnapshot(const BackupContext &context);
     static FinalizeResult finalizeBackup(const BackupContext &context, const SnapshotResult &snapshot);
+    static RestoreResult performRestore(const RestoreContext &context);
 
     BackupperPlugin &plugin_;
     BackupConfig config_;
     std::shared_ptr<BackupContext> current_;
+    std::shared_ptr<RestoreContext> restore_current_;
     std::shared_ptr<endstone::Task> save_query_task_;
     std::shared_ptr<endstone::Task> phase_monitor_task_;
     std::shared_ptr<endstone::Task> schedule_task_;
@@ -158,6 +199,7 @@ private:
     std::optional<std::chrono::system_clock::time_point> next_scheduled_run_;
     std::string last_error_;
     bool runtime_schedule_enabled_ = false;
+    std::future<RestoreResult> restore_future_;
 };
 
 }  // namespace backupper

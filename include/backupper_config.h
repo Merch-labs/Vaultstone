@@ -22,9 +22,24 @@ struct ScheduleConfig {
     bool enabled = false;
     std::string mode = "interval";
     int interval_minutes = 180;
-    std::string cron = "0 */3 * * *";
+    std::string cron = "0 0 */3 * * *";
+    std::vector<std::string> clock_times_local = {"03:00:00"};
     bool run_on_startup = false;
     bool skip_when_no_players = false;
+    bool reset_interval_on_manual_backup = true;
+    bool reset_interval_on_restore = true;
+    bool reset_interval_on_server_start = true;
+    bool persist_interval_state = true;
+    bool catch_up_missed_run_on_startup = false;
+};
+
+struct RestoreConfig {
+    bool require_no_players = true;
+    bool shutdown_after_restore = true;
+    int shutdown_delay_seconds = 3;
+    bool prune_backups_after_restore = false;
+    std::string success_message = "Restore from ${backup_name} finished. Server shutdown in ${shutdown_delay_seconds} seconds.";
+    std::string failure_message = "Restore from ${backup_name} failed: ${error}";
 };
 
 struct NotificationConfig {
@@ -53,6 +68,7 @@ struct BackupConfig {
     std::vector<std::string> exclude_patterns;
     RetentionConfig retention;
     ScheduleConfig schedule;
+    RestoreConfig restore;
     NotificationConfig notifications;
 };
 

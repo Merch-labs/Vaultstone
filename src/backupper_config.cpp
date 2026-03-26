@@ -1,8 +1,10 @@
 #include "backupper_config.h"
 
 #include <fstream>
+#include <sstream>
 #include <stdexcept>
 
+#include <croncpp.h>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
@@ -48,9 +50,35 @@ ScheduleConfig readSchedule(const json &value, const ScheduleConfig &defaults)
     schedule.mode = value.value("mode", schedule.mode);
     schedule.interval_minutes = value.value("interval_minutes", schedule.interval_minutes);
     schedule.cron = value.value("cron", schedule.cron);
+    if (value.contains("clock_times_local")) {
+        schedule.clock_times_local = value.at("clock_times_local").get<std::vector<std::string>>();
+    }
     schedule.run_on_startup = value.value("run_on_startup", schedule.run_on_startup);
     schedule.skip_when_no_players = value.value("skip_when_no_players", schedule.skip_when_no_players);
+    schedule.reset_interval_on_manual_backup =
+        value.value("reset_interval_on_manual_backup", schedule.reset_interval_on_manual_backup);
+    schedule.reset_interval_on_restore = value.value("reset_interval_on_restore", schedule.reset_interval_on_restore);
+    schedule.reset_interval_on_server_start =
+        value.value("reset_interval_on_server_start", schedule.reset_interval_on_server_start);
+    schedule.persist_interval_state = value.value("persist_interval_state", schedule.persist_interval_state);
+    schedule.catch_up_missed_run_on_startup =
+        value.value("catch_up_missed_run_on_startup", schedule.catch_up_missed_run_on_startup);
     return schedule;
+}
+
+RestoreConfig readRestore(const json &value, const RestoreConfig &defaults)
+{
+    RestoreConfig restore = defaults;
+    if (!value.is_object()) {
+        return restore;
+    }
+    restore.require_no_players = value.value("require_no_players", restore.require_no_players);
+    restore.shutdown_after_restore = value.value("shutdown_after_restore", restore.shutdown_after_restore);
+    restore.shutdown_delay_seconds = value.value("shutdown_delay_seconds", restore.shutdown_delay_seconds);
+    restore.prune_backups_after_restore = value.value("prune_backups_after_restore", restore.prune_backups_after_restore);
+    restore.success_message = value.value("success_message", restore.success_message);
+    restore.failure_message = value.value("failure_message", restore.failure_message);
+    return restore;
 }
 
 NotificationConfig readNotifications(const json &value, const NotificationConfig &defaults)
@@ -100,8 +128,21 @@ json toJson(const BackupConfig &config)
           {"mode", config.schedule.mode},
           {"interval_minutes", config.schedule.interval_minutes},
           {"cron", config.schedule.cron},
+          {"clock_times_local", config.schedule.clock_times_local},
           {"run_on_startup", config.schedule.run_on_startup},
-          {"skip_when_no_players", config.schedule.skip_when_no_players}}},
+          {"skip_when_no_players", config.schedule.skip_when_no_players},
+          {"reset_interval_on_manual_backup", config.schedule.reset_interval_on_manual_backup},
+          {"reset_interval_on_restore", config.schedule.reset_interval_on_restore},
+          {"reset_interval_on_server_start", config.schedule.reset_interval_on_server_start},
+          {"persist_interval_state", config.schedule.persist_interval_state},
+          {"catch_up_missed_run_on_startup", config.schedule.catch_up_missed_run_on_startup}}},
+        {"restore",
+         {{"require_no_players", config.restore.require_no_players},
+          {"shutdown_after_restore", config.restore.shutdown_after_restore},
+          {"shutdown_delay_seconds", config.restore.shutdown_delay_seconds},
+          {"prune_backups_after_restore", config.restore.prune_backups_after_restore},
+          {"success_message", config.restore.success_message},
+          {"failure_message", config.restore.failure_message}}},
         {"notifications",
          {{"broadcast", config.notifications.broadcast},
           {"countdown_seconds", config.notifications.countdown_seconds},
@@ -131,6 +172,46 @@ void validateConfig(const BackupConfig &config)
     }
     if (config.targets.empty()) {
         throw std::runtime_error("At least one backup target is required.");
+    }
+    if (config.schedule.mode != "interval" && config.schedule.mode != "clock" && config.schedule.mode != "cron") {
+        throw std::runtime_error("schedule.mode must be one of 'interval', 'clock', or 'cron'.");
+    }
+    if (config.schedule.mode == "interval" && config.schedule.interval_minutes < 1) {
+        throw std::runtime_error("schedule.interval_minutes must be at least 1 when mode is 'interval'.");
+    }
+    if (config.schedule.mode == "clock" && config.schedule.clock_times_local.empty()) {
+        throw std::runtime_error("schedule.clock_times_local must contain at least one time when mode is 'clock'.");
+    }
+    if (config.schedule.mode == "clock") {
+        for (const auto &value : config.schedule.clock_times_local) {
+            std::istringstream stream(value);
+            std::string hour_text;
+            std::string minute_text;
+            std::string second_text;
+            if (!std::getline(stream, hour_text, ':') || !std::getline(stream, minute_text, ':')) {
+                throw std::runtime_error("schedule.clock_times_local entries must use HH:MM or HH:MM:SS.");
+            }
+            if (!std::getline(stream, second_text)) {
+                second_text = "0";
+            }
+            const int hour = std::stoi(hour_text);
+            const int minute = std::stoi(minute_text);
+            const int second = std::stoi(second_text);
+            if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+                throw std::runtime_error("schedule.clock_times_local entries must be valid local times.");
+            }
+        }
+    }
+    if (config.schedule.mode == "cron") {
+        try {
+            static_cast<void>(cron::make_cron(config.schedule.cron));
+        }
+        catch (const std::exception &exception) {
+            throw std::runtime_error(std::string("schedule.cron is invalid: ") + exception.what());
+        }
+    }
+    if (config.restore.shutdown_delay_seconds < 0 || config.restore.shutdown_delay_seconds > 3600) {
+        throw std::runtime_error("restore.shutdown_delay_seconds must be between 0 and 3600.");
     }
 }
 
@@ -203,6 +284,7 @@ BackupConfig loadConfig(const std::filesystem::path &path)
 
     config.retention = readRetention(document.value("retention", json::object()), config.retention);
     config.schedule = readSchedule(document.value("schedule", json::object()), config.schedule);
+    config.restore = readRestore(document.value("restore", json::object()), config.restore);
     config.notifications = readNotifications(document.value("notifications", json::object()), config.notifications);
 
     validateConfig(config);

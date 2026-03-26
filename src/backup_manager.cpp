@@ -63,6 +63,41 @@ std::string timePointToCompactTimestamp(const std::chrono::system_clock::time_po
     return output.str();
 }
 
+std::int64_t timePointToUnixSeconds(const std::chrono::system_clock::time_point value)
+{
+    return std::chrono::duration_cast<std::chrono::seconds>(value.time_since_epoch()).count();
+}
+
+std::chrono::system_clock::time_point unixSecondsToTimePoint(const std::int64_t value)
+{
+    return std::chrono::system_clock::time_point(std::chrono::seconds(value));
+}
+
+int parseClockTimeString(const std::string &value)
+{
+    std::istringstream stream(value);
+    std::string hour_text;
+    std::string minute_text;
+    std::string second_text;
+
+    if (!std::getline(stream, hour_text, ':') || !std::getline(stream, minute_text, ':')) {
+        throw std::runtime_error("Clock times must use HH:MM or HH:MM:SS format.");
+    }
+
+    if (!std::getline(stream, second_text)) {
+        second_text = "0";
+    }
+
+    const int hour = std::stoi(hour_text);
+    const int minute = std::stoi(minute_text);
+    const int second = std::stoi(second_text);
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+        throw std::runtime_error("Clock times must be within 00:00:00 and 23:59:59.");
+    }
+
+    return (hour * 3600) + (minute * 60) + second;
+}
+
 std::regex globToRegex(const std::string &pattern)
 {
     std::string output = "^";
@@ -244,6 +279,41 @@ void copyFilesParallel(const std::vector<std::pair<fs::path, fs::path>> &copies,
     }
 }
 
+void copyTree(const fs::path &source_root, const fs::path &destination_root)
+{
+    if (!fs::exists(source_root)) {
+        return;
+    }
+
+    for (const auto &entry : fs::recursive_directory_iterator(source_root)) {
+        const auto relative = fs::relative(entry.path(), source_root);
+        const auto destination = destination_root / relative;
+        if (entry.is_directory()) {
+            fs::create_directories(destination);
+            continue;
+        }
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+        fs::create_directories(destination.parent_path());
+        fs::copy_file(entry.path(), destination, fs::copy_options::overwrite_existing);
+    }
+}
+
+bool pathEscapesRoot(const fs::path &relative_path)
+{
+    if (relative_path.empty() || relative_path.is_absolute()) {
+        return true;
+    }
+
+    for (const auto &component : relative_path) {
+        if (component == "..") {
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 BackupManager::BackupManager(BackupperPlugin &plugin) : plugin_(plugin) {}
@@ -275,6 +345,7 @@ void BackupManager::onDisable()
     clearSchedule();
 
     resumeSaveIfNeeded();
+    resumeRestoreSaveIfNeeded();
 
     if (current_) {
         if (current_->snapshot_future.valid()) {
@@ -284,12 +355,15 @@ void BackupManager::onDisable()
             current_->finalize_future.wait();
         }
     }
+    if (restore_current_ && restore_future_.valid()) {
+        restore_future_.wait();
+    }
 }
 
 bool BackupManager::reload(std::string &error)
 {
     if (isBusy()) {
-        error = "A backup is already running.";
+        error = "A backup or restore is already running.";
         return false;
     }
 
@@ -308,6 +382,16 @@ bool BackupManager::reload(std::string &error)
 bool BackupManager::startManualBackup(const std::string &requested_by, const std::string &label, std::string &error)
 {
     return startBackupRequest("manual", requested_by, label, error);
+}
+
+bool BackupManager::startRestore(const std::string &requested_by, const std::string &backup_selector, std::string &error)
+{
+    const auto backup = findBackup(backup_selector);
+    if (!backup) {
+        error = "No backup found with that name.";
+        return false;
+    }
+    return startRestoreRequest(requested_by, *backup, error);
 }
 
 bool BackupManager::startSchedule(std::string &error)
@@ -330,6 +414,7 @@ bool BackupManager::stopSchedule(std::string &error)
     clearSchedule();
     runtime_schedule_enabled_ = false;
     next_scheduled_run_.reset();
+    clearRuntimeState();
     error.clear();
     return true;
 }
@@ -372,6 +457,42 @@ bool BackupManager::startBackupRequest(const std::string &trigger, const std::st
     }
 }
 
+bool BackupManager::startRestoreRequest(const std::string &requested_by, const StoredBackup &backup, std::string &error)
+{
+    if (isBusy()) {
+        error = "Another backup or restore operation is already running.";
+        return false;
+    }
+    if (config_.restore.require_no_players && !plugin_.getServer().getOnlinePlayers().empty()) {
+        error = "All players must leave before running a restore.";
+        return false;
+    }
+
+    auto context = std::make_shared<RestoreContext>();
+    context->config = config_;
+    context->backup = backup;
+    context->requested_by = requested_by;
+    context->server_root = getServerRoot();
+    context->temp_root = plugin_.getDataFolder() / config_.temporary_directory / ("restore_" + sanitizeName(backup.name));
+    context->values = buildTemplateValues("restore", requested_by, backup.name);
+    context->values.backup_name = backup.name;
+    context->values.label = backup.name;
+
+    restore_current_ = std::move(context);
+    auto &console = plugin_.getServer().getCommandSender();
+    if (!plugin_.getServer().dispatchCommand(console, "save hold")) {
+        restore_current_.reset();
+        error = "Unable to execute 'save hold' for restore.";
+        return false;
+    }
+
+    restore_current_->save_hold_active = true;
+    save_query_task_ = plugin_.getServer().getScheduler().runTaskTimer(
+        plugin_, [this]() { onSaveQueryTick(); }, 1, config_.save_query_interval_ticks);
+    error.clear();
+    return true;
+}
+
 void BackupManager::sendStatus(endstone::CommandSender &sender) const
 {
     sender.sendMessage("Backupper status: {}", isBusy() ? "running" : "idle");
@@ -387,6 +508,10 @@ void BackupManager::sendStatus(endstone::CommandSender &sender) const
         sender.sendMessage("Current backup: {}", current_->values.backup_name);
         sender.sendMessage("Trigger: {}", current_->trigger);
         sender.sendMessage("Requested by: {}", current_->requested_by);
+    }
+    if (restore_current_) {
+        sender.sendMessage("Current restore: {}", restore_current_->backup.name);
+        sender.sendMessage("Restore requested by: {}", restore_current_->requested_by);
     }
 
     if (last_backup_) {
@@ -465,15 +590,52 @@ void BackupManager::configureSchedule()
 
     if (!runtime_schedule_enabled_) {
         next_scheduled_run_.reset();
+        clearRuntimeState();
         return;
     }
 
     if (config_.schedule.mode == "interval") {
         const auto period = std::max(1, config_.schedule.interval_minutes);
         const auto period_ticks = static_cast<std::uint64_t>(period) * 60ULL * 20ULL;
-        next_scheduled_run_ = std::chrono::system_clock::now() + std::chrono::minutes(period);
+        std::chrono::system_clock::time_point next_run;
+        const auto now = std::chrono::system_clock::now();
+        if (!config_.schedule.reset_interval_on_server_start) {
+            if (const auto persisted = loadPersistedIntervalRun()) {
+                next_run = *persisted;
+                while (next_run <= now) {
+                    next_run += std::chrono::minutes(period);
+                }
+                if (config_.schedule.catch_up_missed_run_on_startup && *persisted <= now) {
+                    maybeRunMissedIntervalBackupOnStartup(*persisted);
+                    next_run = std::chrono::system_clock::now() + std::chrono::minutes(period);
+                }
+            }
+            else {
+                next_run = now + std::chrono::minutes(period);
+            }
+        }
+        else {
+            next_run = now + std::chrono::minutes(period);
+        }
+
+        next_scheduled_run_ = next_run;
+        auto delay = std::chrono::duration_cast<std::chrono::seconds>(next_run - std::chrono::system_clock::now()).count();
+        if (delay < 1) {
+            delay = 1;
+        }
+        const auto delay_ticks = static_cast<std::uint64_t>(delay) * 20ULL;
         schedule_task_ = plugin_.getServer().getScheduler().runTaskTimer(
-            plugin_, [this]() { onScheduledIntervalTick(); }, period_ticks, period_ticks);
+            plugin_, [this]() { onScheduledIntervalTick(); }, delay_ticks, period_ticks);
+        persistRuntimeState();
+        return;
+    }
+
+    clearRuntimeState();
+
+    if (config_.schedule.mode == "clock") {
+        next_scheduled_run_ = computeNextClockRun(std::chrono::system_clock::now());
+        schedule_task_ =
+            plugin_.getServer().getScheduler().runTaskTimer(plugin_, [this]() { onScheduledCronTick(); }, 20, 20);
         return;
     }
 
@@ -485,7 +647,7 @@ void BackupManager::configureSchedule()
         return;
     }
 
-    throw std::runtime_error("schedule.mode must be either 'interval' or 'cron'.");
+    throw std::runtime_error("schedule.mode must be one of 'interval', 'clock', or 'cron'.");
 }
 
 void BackupManager::clearSchedule()
@@ -508,6 +670,107 @@ void BackupManager::queueStartupBackupIfNeeded()
             plugin_.getLogger().warning("Startup backup skipped: {}", error);
         }
     }, 40);
+}
+
+void BackupManager::restartIntervalScheduleFrom(const std::chrono::system_clock::time_point &time_point)
+{
+    if (!runtime_schedule_enabled_ || config_.schedule.mode != "interval") {
+        return;
+    }
+
+    clearSchedule();
+
+    const auto period = std::max(1, config_.schedule.interval_minutes);
+    const auto period_ticks = static_cast<std::uint64_t>(period) * 60ULL * 20ULL;
+    next_scheduled_run_ = time_point + std::chrono::minutes(period);
+    schedule_task_ = plugin_.getServer().getScheduler().runTaskTimer(
+        plugin_, [this]() { onScheduledIntervalTick(); }, period_ticks, period_ticks);
+    persistRuntimeState();
+}
+
+void BackupManager::persistRuntimeState() const
+{
+    if (config_.schedule.mode != "interval" || !config_.schedule.persist_interval_state || !next_scheduled_run_) {
+        return;
+    }
+
+    fs::create_directories(getStatePath().parent_path());
+    json state = {{"next_interval_run_unix", timePointToUnixSeconds(*next_scheduled_run_)}};
+    std::ofstream output(getStatePath());
+    output << state.dump(4) << '\n';
+}
+
+void BackupManager::clearRuntimeState()
+{
+    std::error_code error;
+    fs::remove(getStatePath(), error);
+}
+
+void BackupManager::maybeRunMissedIntervalBackupOnStartup(const std::chrono::system_clock::time_point &persisted_next_run)
+{
+    plugin_.getServer().getScheduler().runTaskLater(plugin_, [this]() {
+        std::string error;
+        if (!startScheduledBackup("schedule", error) && !error.empty()) {
+            plugin_.getLogger().warning("Missed interval backup skipped: {}", error);
+        }
+    }, 40);
+}
+
+std::optional<std::chrono::system_clock::time_point> BackupManager::loadPersistedIntervalRun() const
+{
+    if (!config_.schedule.persist_interval_state || !fs::exists(getStatePath())) {
+        return std::nullopt;
+    }
+
+    std::ifstream input(getStatePath());
+    if (!input) {
+        return std::nullopt;
+    }
+
+    json state = json::parse(input, nullptr, false);
+    if (state.is_discarded() || !state.contains("next_interval_run_unix")) {
+        return std::nullopt;
+    }
+
+    return unixSecondsToTimePoint(state.at("next_interval_run_unix").get<std::int64_t>());
+}
+
+std::chrono::system_clock::time_point BackupManager::computeNextClockRun(
+    const std::chrono::system_clock::time_point &after) const
+{
+    const auto times = parseClockTimesLocal();
+    const auto time = std::chrono::system_clock::to_time_t(after);
+    std::tm broken_down{};
+    localtime_r(&time, &broken_down);
+
+    for (int day_offset = 0; day_offset < 8; ++day_offset) {
+        std::tm candidate = broken_down;
+        candidate.tm_hour = 0;
+        candidate.tm_min = 0;
+        candidate.tm_sec = 0;
+        candidate.tm_mday += day_offset;
+        const auto midnight = std::chrono::system_clock::from_time_t(std::mktime(&candidate));
+        for (const int seconds_since_midnight : times) {
+            const auto next_run = midnight + std::chrono::seconds(seconds_since_midnight);
+            if (next_run > after) {
+                return next_run;
+            }
+        }
+    }
+
+    throw std::runtime_error("Unable to compute next clock-based scheduled backup.");
+}
+
+std::vector<int> BackupManager::parseClockTimesLocal() const
+{
+    std::vector<int> result;
+    result.reserve(config_.schedule.clock_times_local.size());
+    for (const auto &value : config_.schedule.clock_times_local) {
+        result.push_back(parseClockTimeString(value));
+    }
+    std::sort(result.begin(), result.end());
+    result.erase(std::unique(result.begin(), result.end()), result.end());
+    return result;
 }
 
 void BackupManager::beginBackup(std::shared_ptr<BackupContext> context)
@@ -541,6 +804,7 @@ void BackupManager::onScheduledIntervalTick()
     }
 
     next_scheduled_run_ = std::chrono::system_clock::now() + std::chrono::minutes(std::max(1, config_.schedule.interval_minutes));
+    persistRuntimeState();
 
     std::string error;
     if (!startScheduledBackup("schedule", error) && !error.empty()) {
@@ -559,8 +823,13 @@ void BackupManager::onScheduledCronTick()
         return;
     }
 
-    const auto expression = cron::make_cron(config_.schedule.cron);
-    next_scheduled_run_ = cron::cron_next(expression, now + std::chrono::seconds(1));
+    if (config_.schedule.mode == "clock") {
+        next_scheduled_run_ = computeNextClockRun(now + std::chrono::seconds(1));
+    }
+    else {
+        const auto expression = cron::make_cron(config_.schedule.cron);
+        next_scheduled_run_ = cron::cron_next(expression, now + std::chrono::seconds(1));
+    }
 
     std::string error;
     if (!startScheduledBackup("schedule", error) && !error.empty()) {
@@ -570,7 +839,7 @@ void BackupManager::onScheduledCronTick()
 
 void BackupManager::onSaveQueryTick()
 {
-    if (!current_) {
+    if (!current_ && !restore_current_) {
         return;
     }
 
@@ -581,27 +850,48 @@ void BackupManager::onSaveQueryTick()
         [&messages, this](const endstone::Message &message) { messages.push_back(messageToString(message)); });
 
     const bool dispatch_result = plugin_.getServer().dispatchCommand(wrapper, "save query");
-    ++current_->save_query_attempts;
+
+    if (current_) {
+        ++current_->save_query_attempts;
+    }
+    if (restore_current_) {
+        ++restore_current_->save_query_attempts;
+    }
 
     if (saveQueryLooksReady(messages, dispatch_result)) {
         if (save_query_task_) {
             save_query_task_->cancel();
             save_query_task_.reset();
         }
-        current_->snapshot_future = std::async(std::launch::async, [context = current_]() { return createSnapshot(*context); });
+        if (current_) {
+            current_->snapshot_future =
+                std::async(std::launch::async, [context = current_]() { return createSnapshot(*context); });
+        }
+        else if (restore_current_) {
+            restore_future_ = std::async(std::launch::async, [context = restore_current_]() { return performRestore(*context); });
+        }
         ensurePhaseMonitorTask(5);
         return;
     }
 
-    const auto waited_ticks = current_->save_query_attempts * current_->config.save_query_interval_ticks;
-    if (waited_ticks >= current_->config.save_query_timeout_ticks) {
-        finishFailure("Timed out waiting for 'save query' to report a ready snapshot.");
+    const auto waited_ticks =
+        current_ ? current_->save_query_attempts * current_->config.save_query_interval_ticks
+                 : restore_current_->save_query_attempts * restore_current_->config.save_query_interval_ticks;
+    const auto timeout_ticks =
+        current_ ? current_->config.save_query_timeout_ticks : restore_current_->config.save_query_timeout_ticks;
+    if (waited_ticks >= timeout_ticks) {
+        if (current_) {
+            finishFailure("Timed out waiting for 'save query' to report a ready snapshot.");
+        }
+        else {
+            finishRestoreFailure("Timed out waiting for 'save query' to report a ready restore point.");
+        }
     }
 }
 
 void BackupManager::onPhaseMonitorTick()
 {
-    if (!current_) {
+    if (!current_ && !restore_current_) {
         if (phase_monitor_task_) {
             phase_monitor_task_->cancel();
             phase_monitor_task_.reset();
@@ -632,6 +922,16 @@ void BackupManager::onPhaseMonitorTick()
             return;
         }
         finishSuccess(result);
+    }
+
+    if (restore_current_ && restore_future_.valid() &&
+        restore_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        const auto result = restore_future_.get();
+        if (!result.ok) {
+            finishRestoreFailure(result.error);
+            return;
+        }
+        finishRestoreSuccess(result);
     }
 }
 
@@ -668,6 +968,28 @@ void BackupManager::finishFailure(const std::string &error)
     current_.reset();
 }
 
+void BackupManager::finishRestoreFailure(const std::string &error)
+{
+    if (save_query_task_) {
+        save_query_task_->cancel();
+        save_query_task_.reset();
+    }
+    if (phase_monitor_task_) {
+        phase_monitor_task_->cancel();
+        phase_monitor_task_.reset();
+    }
+
+    if (restore_current_) {
+        resumeRestoreSaveIfNeeded();
+        fs::remove_all(restore_current_->temp_root);
+        broadcastRestoreFailure(restore_current_->values, error);
+    }
+
+    last_error_ = error;
+    plugin_.getLogger().error("Restore failed: {}", error);
+    restore_current_.reset();
+}
+
 void BackupManager::finishSuccess(const FinalizeResult &result)
 {
     if (save_query_task_) {
@@ -681,9 +1003,46 @@ void BackupManager::finishSuccess(const FinalizeResult &result)
 
     last_backup_ = result.summary;
     last_error_.clear();
+    updateScheduleAfterSuccessfulBackup(result.summary);
     broadcastSuccess(result.summary);
     plugin_.getLogger().info("Backup '{}' finished in {}.", result.summary.name, formatDuration(result.summary.duration));
     current_.reset();
+}
+
+void BackupManager::finishRestoreSuccess(const RestoreResult &result)
+{
+    if (save_query_task_) {
+        save_query_task_->cancel();
+        save_query_task_.reset();
+    }
+    if (phase_monitor_task_) {
+        phase_monitor_task_->cancel();
+        phase_monitor_task_.reset();
+    }
+
+    if (!restore_current_) {
+        return;
+    }
+
+    last_error_.clear();
+    updateScheduleAfterSuccessfulRestore();
+    broadcastRestoreSuccess(restore_current_->values);
+    plugin_.getLogger().info("Restore '{}' finished, restored {} file(s).", result.backup_name, result.restored_files);
+    fs::remove_all(restore_current_->temp_root);
+
+    const auto shutdown_delay_ticks = static_cast<std::uint64_t>(restore_current_->config.restore.shutdown_delay_seconds) * 20ULL;
+    const bool should_shutdown = restore_current_->config.restore.shutdown_after_restore;
+
+    if (!should_shutdown) {
+        resumeRestoreSaveIfNeeded();
+    }
+
+    restore_current_.reset();
+
+    if (should_shutdown) {
+        plugin_.getServer().getScheduler().runTaskLater(plugin_, [this]() { plugin_.getServer().shutdown(); },
+                                                        shutdown_delay_ticks);
+    }
 }
 
 void BackupManager::resumeSaveIfNeeded()
@@ -696,6 +1055,18 @@ void BackupManager::resumeSaveIfNeeded()
         plugin_.getLogger().warning("Unable to execute 'save resume'.");
     }
     current_->save_hold_active = false;
+}
+
+void BackupManager::resumeRestoreSaveIfNeeded()
+{
+    if (!restore_current_ || !restore_current_->save_hold_active) {
+        return;
+    }
+    auto &console = plugin_.getServer().getCommandSender();
+    if (!plugin_.getServer().dispatchCommand(console, "save resume")) {
+        plugin_.getLogger().warning("Unable to execute 'save resume' after restore.");
+    }
+    restore_current_->save_hold_active = false;
 }
 
 void BackupManager::broadcastMessage(const std::string &message) const
@@ -724,6 +1095,26 @@ void BackupManager::broadcastSuccess(const BackupSummary &summary) const
     broadcastMessage(renderTemplate(config_.notifications.success_message, values));
 }
 
+void BackupManager::broadcastRestoreFailure(const TemplateValues &values, const std::string &error) const
+{
+    if (!config_.notifications.broadcast) {
+        return;
+    }
+    auto copy = values;
+    copy.error = error;
+    broadcastMessage(renderTemplate(config_.restore.failure_message, copy));
+}
+
+void BackupManager::broadcastRestoreSuccess(const TemplateValues &values) const
+{
+    if (!config_.notifications.broadcast) {
+        return;
+    }
+    auto copy = values;
+    copy.shutdown_delay_seconds = std::to_string(config_.restore.shutdown_delay_seconds);
+    broadcastMessage(renderTemplate(config_.restore.success_message, copy));
+}
+
 bool BackupManager::startScheduledBackup(const std::string &trigger, std::string &error)
 {
     std::string skip_reason;
@@ -746,9 +1137,29 @@ bool BackupManager::shouldSkipScheduledBackup(std::string &reason) const
     return false;
 }
 
+void BackupManager::updateScheduleAfterSuccessfulBackup(const BackupSummary &summary)
+{
+    if (!runtime_schedule_enabled_ || config_.schedule.mode != "interval") {
+        return;
+    }
+    if (summary.trigger == "manual" && config_.schedule.reset_interval_on_manual_backup) {
+        restartIntervalScheduleFrom(std::chrono::system_clock::now());
+    }
+}
+
+void BackupManager::updateScheduleAfterSuccessfulRestore()
+{
+    if (!runtime_schedule_enabled_ || config_.schedule.mode != "interval") {
+        return;
+    }
+    if (config_.schedule.reset_interval_on_restore) {
+        restartIntervalScheduleFrom(std::chrono::system_clock::now());
+    }
+}
+
 bool BackupManager::isBusy() const
 {
-    return static_cast<bool>(current_);
+    return static_cast<bool>(current_) || static_cast<bool>(restore_current_);
 }
 
 fs::path BackupManager::getServerRoot() const
@@ -759,6 +1170,11 @@ fs::path BackupManager::getServerRoot() const
 fs::path BackupManager::getConfigPath() const
 {
     return plugin_.getDataFolder() / "config.json";
+}
+
+fs::path BackupManager::getStatePath() const
+{
+    return plugin_.getDataFolder() / "runtime_state.json";
 }
 
 std::string BackupManager::readLevelName() const
@@ -796,6 +1212,7 @@ BackupManager::TemplateValues BackupManager::buildTemplateValues(const std::stri
     values.label = label;
     values.level_name = readLevelName();
     values.requested_by = requested_by;
+    values.shutdown_delay_seconds = std::to_string(config_.restore.shutdown_delay_seconds);
     values.time = time_stream.str();
     values.timestamp = timePointToCompactTimestamp(now);
     values.trigger = trigger;
@@ -814,6 +1231,7 @@ std::string BackupManager::renderTemplate(const std::string &input, const Templa
         {"${label}", values.label},
         {"${level_name}", values.level_name},
         {"${requested_by}", values.requested_by},
+        {"${shutdown_delay_seconds}", values.shutdown_delay_seconds},
         {"${time}", values.time},
         {"${timestamp}", values.timestamp},
         {"${trigger}", values.trigger},
@@ -930,6 +1348,25 @@ std::vector<StoredBackup> BackupManager::collectBackups(const BackupConfig &conf
         return left.modified_at > right.modified_at;
     });
     return backups;
+}
+
+std::optional<StoredBackup> BackupManager::findBackup(const std::string &selector) const
+{
+    const auto backups = collectBackups(config_);
+    if (backups.empty()) {
+        return std::nullopt;
+    }
+    if (selector == "latest") {
+        return backups.front();
+    }
+
+    const auto match = std::find_if(backups.begin(), backups.end(), [&selector](const auto &backup) {
+        return backup.name == selector || backup.path.filename() == selector;
+    });
+    if (match == backups.end()) {
+        return std::nullopt;
+    }
+    return *match;
 }
 
 std::size_t BackupManager::pruneBackupsInternal(const BackupConfig &config, const fs::path &keep_path,
@@ -1119,6 +1556,95 @@ BackupManager::FinalizeResult BackupManager::finalizeBackup(const BackupContext 
         result.summary.duration = duration;
         result.summary.completed_at = finished_at;
         result.removed_count = removed_count;
+        result.ok = true;
+        return result;
+    }
+    catch (const std::exception &exception) {
+        result.ok = false;
+        result.error = exception.what();
+        return result;
+    }
+}
+
+BackupManager::RestoreResult BackupManager::performRestore(const RestoreContext &context)
+{
+    RestoreResult result;
+    result.backup_name = context.backup.name;
+
+    try {
+        fs::remove_all(context.temp_root);
+        const auto extraction_root = context.temp_root / "payload";
+        fs::create_directories(extraction_root);
+
+        if (fs::is_directory(context.backup.path)) {
+            copyTree(context.backup.path, extraction_root);
+        }
+        else {
+            extractZipArchive(context.backup.path, extraction_root);
+        }
+
+        const auto manifest_path = extraction_root / "backupper-manifest.json";
+        if (!fs::exists(manifest_path)) {
+            throw std::runtime_error("Backup manifest is missing. This backup cannot be restored safely.");
+        }
+
+        std::ifstream input(manifest_path);
+        if (!input) {
+            throw std::runtime_error("Unable to open backup manifest.");
+        }
+
+        json manifest = json::parse(input);
+        if (!manifest.contains("targets") || !manifest.at("targets").is_array()) {
+            throw std::runtime_error("Backup manifest is missing target metadata.");
+        }
+
+        for (const auto &target_value : manifest.at("targets")) {
+            if (!target_value.is_object()) {
+                throw std::runtime_error("Backup manifest contains an invalid target entry.");
+            }
+
+            const auto target_text = target_value.value("path", "");
+            const bool required = target_value.value("required", true);
+            if (target_text.empty()) {
+                throw std::runtime_error("Backup manifest contains a target with an empty path.");
+            }
+
+            const fs::path relative_target = fs::path(target_text).lexically_normal();
+            if (pathEscapesRoot(relative_target)) {
+                throw std::runtime_error("Backup manifest contains an unsafe target path: " + target_text);
+            }
+
+            const auto source_path = extraction_root / relative_target;
+            const auto destination_path = context.server_root / relative_target;
+
+            if (fs::exists(destination_path)) {
+                fs::remove_all(destination_path);
+                ++result.removed_paths;
+            }
+
+            if (!fs::exists(source_path)) {
+                if (required) {
+                    throw std::runtime_error("Required restore target is missing from the backup: " + target_text);
+                }
+                continue;
+            }
+
+            if (fs::is_regular_file(source_path)) {
+                fs::create_directories(destination_path.parent_path());
+                fs::copy_file(source_path, destination_path, fs::copy_options::overwrite_existing);
+                ++result.restored_files;
+                continue;
+            }
+
+            fs::create_directories(destination_path);
+            copyTree(source_path, destination_path);
+            result.restored_files += collectArchiveEntries(source_path).size();
+        }
+
+        if (context.config.restore.prune_backups_after_restore) {
+            pruneBackupDirectory(context.config, context.server_root / context.config.backup_directory, context.backup.path);
+        }
+
         result.ok = true;
         return result;
     }
