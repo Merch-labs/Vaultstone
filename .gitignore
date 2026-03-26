@@ -1,0 +1,9 @@
+build/
+build-*/
+.cache/
+.deps/
+.idea/
+.vscode/
+cmake-build-*/
+Testing/
+compile_commands.json
