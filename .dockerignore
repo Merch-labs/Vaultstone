@@ -1,0 +1,6 @@
+.git
+.deps
+build
+build-*
+cmake-build-*
+Testing
