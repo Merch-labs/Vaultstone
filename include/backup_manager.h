@@ -145,6 +145,7 @@ private:
     void updateScheduleAfterSuccessfulBackup(const BackupSummary &summary);
     void updateScheduleAfterSuccessfulRestore();
     void restartIntervalScheduleFrom(const std::chrono::system_clock::time_point &time_point);
+    void armIntervalSchedule();
     void persistRuntimeState() const;
     void clearRuntimeState();
     void maybeRunMissedIntervalBackupOnStartup(const std::chrono::system_clock::time_point &persisted_next_run);

@@ -7,17 +7,20 @@
 - Native C++ Endstone plugin with no external runtime services
 - JSON configuration generated automatically on first start
 - Hot backups using Bedrock's save coordination commands
-- ZIP archives written directly in-process
+- ZIP archives written directly in-process, plus directory-format backups when preferred
 - Configurable include targets and exclude patterns
 - Retention controls for count, age, and total backup size
-- Manual admin commands for backup, reload, listing, pruning, deleting, and schedule control
-- Interval or cron-style scheduling
+- Manual admin commands for backup, restore, reload, listing, pruning, deleting, and schedule control
+- Interval, cron, or fixed local-time scheduling
+- Optional interval reset behavior for manual backups, restores, and server restarts
+- In-plugin restore flow with safe extraction, manifest validation, and optional post-restore shutdown
 - Debian 12 release build script for broad Linux compatibility
 
 ## Commands
 
 - `/backupper status`
 - `/backupper backup [label]`
+- `/backupper restore <name|latest>`
 - `/backupper reload`
 - `/backupper list [limit]`
 - `/backupper prune`
@@ -36,8 +39,21 @@ Important sections:
 - `exclude_patterns`: glob-style filters applied to relative paths
 - `archive_format`: `zip` or `directory`
 - `retention`: max backups, max age, and max total size
-- `schedule`: interval or cron scheduling, startup run, skip-when-empty behavior
+- `schedule`: interval, cron, or fixed-time scheduling, plus interval persistence/reset behavior
+- `restore`: restore safety checks, shutdown behavior, and restore messages
 - `notifications`: broadcast text for backup lifecycle messages
+
+Useful schedule options:
+
+- `schedule.mode`: `interval`, `cron`, or `clock`
+- `schedule.interval_minutes`: repeat interval for `interval` mode
+- `schedule.cron`: cron expression for `cron` mode
+- `schedule.clock_times_local`: one or more local `HH:MM[:SS]` times for `clock` mode
+- `schedule.reset_interval_on_manual_backup`: whether a manual backup restarts the interval timer
+- `schedule.reset_interval_on_restore`: whether a restore restarts the interval timer
+- `schedule.reset_interval_on_server_start`: whether restarting the server restarts the interval timer
+- `schedule.persist_interval_state`: whether the next interval run is written to disk
+- `schedule.catch_up_missed_run_on_startup`: optionally run one missed interval backup after startup
 
 The default config backs up:
 
@@ -82,4 +98,9 @@ The plugin was validated against an Endstone 0.11.1 Debian 12 server by:
 - running `/backupper backup smoke-test`
 - verifying the created ZIP archive and embedded `backupper-manifest.json`
 - running `/backupper list`, `/backupper reload`, and `/backupper delete`
-- running `/backupper schedule start` with a 1-minute interval and confirming an automatic scheduled backup was written
+- confirming `reset_interval_on_manual_backup` on and off with live interval schedule checks
+- confirming `reset_interval_on_server_start` on and off across real server restarts
+- running cron scheduling live with `*/15 * * * * *`
+- running fixed local-time scheduling live with `clock_times_local`
+- creating and validating both ZIP and directory-format backups
+- restoring a real backup with `/backupper restore latest` and verifying `permissions.json` was rolled back successfully

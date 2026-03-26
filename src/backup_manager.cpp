@@ -321,6 +321,7 @@ BackupManager::BackupManager(BackupperPlugin &plugin) : plugin_(plugin) {}
 void BackupManager::onEnable()
 {
     loadConfigOrThrow();
+    runtime_schedule_enabled_ = config_.schedule.enabled;
     configureSchedule();
     queueStartupBackupIfNeeded();
     if (config_.retention.prune_on_startup) {
@@ -369,6 +370,7 @@ bool BackupManager::reload(std::string &error)
 
     try {
         loadConfigOrThrow();
+        runtime_schedule_enabled_ = config_.schedule.enabled;
         configureSchedule();
         error.clear();
         return true;
@@ -500,6 +502,15 @@ void BackupManager::sendStatus(endstone::CommandSender &sender) const
     sender.sendMessage("Backup directory: {}", config_.backup_directory);
     sender.sendMessage("Format: {}", config_.archive_format);
     sender.sendMessage("Schedule: {} ({})", runtime_schedule_enabled_ ? "running" : "stopped", config_.schedule.mode);
+    if (config_.schedule.mode == "interval") {
+        sender.sendMessage("Interval resets: manual={}, restart={}, restore={}",
+                           config_.schedule.reset_interval_on_manual_backup ? "on" : "off",
+                           config_.schedule.reset_interval_on_server_start ? "on" : "off",
+                           config_.schedule.reset_interval_on_restore ? "on" : "off");
+        sender.sendMessage("Interval startup state: persist={}, catch_up={}",
+                           config_.schedule.persist_interval_state ? "on" : "off",
+                           config_.schedule.catch_up_missed_run_on_startup ? "on" : "off");
+    }
     if (next_scheduled_run_) {
         sender.sendMessage("Next scheduled run: {}", timePointToFileTime(*next_scheduled_run_));
     }
@@ -596,7 +607,6 @@ void BackupManager::configureSchedule()
 
     if (config_.schedule.mode == "interval") {
         const auto period = std::max(1, config_.schedule.interval_minutes);
-        const auto period_ticks = static_cast<std::uint64_t>(period) * 60ULL * 20ULL;
         std::chrono::system_clock::time_point next_run;
         const auto now = std::chrono::system_clock::now();
         if (!config_.schedule.reset_interval_on_server_start) {
@@ -619,14 +629,8 @@ void BackupManager::configureSchedule()
         }
 
         next_scheduled_run_ = next_run;
-        auto delay = std::chrono::duration_cast<std::chrono::seconds>(next_run - std::chrono::system_clock::now()).count();
-        if (delay < 1) {
-            delay = 1;
-        }
-        const auto delay_ticks = static_cast<std::uint64_t>(delay) * 20ULL;
-        schedule_task_ = plugin_.getServer().getScheduler().runTaskTimer(
-            plugin_, [this]() { onScheduledIntervalTick(); }, delay_ticks, period_ticks);
         persistRuntimeState();
+        armIntervalSchedule();
         return;
     }
 
@@ -681,11 +685,25 @@ void BackupManager::restartIntervalScheduleFrom(const std::chrono::system_clock:
     clearSchedule();
 
     const auto period = std::max(1, config_.schedule.interval_minutes);
-    const auto period_ticks = static_cast<std::uint64_t>(period) * 60ULL * 20ULL;
     next_scheduled_run_ = time_point + std::chrono::minutes(period);
-    schedule_task_ = plugin_.getServer().getScheduler().runTaskTimer(
-        plugin_, [this]() { onScheduledIntervalTick(); }, period_ticks, period_ticks);
     persistRuntimeState();
+    armIntervalSchedule();
+}
+
+void BackupManager::armIntervalSchedule()
+{
+    if (!runtime_schedule_enabled_ || config_.schedule.mode != "interval" || !next_scheduled_run_) {
+        return;
+    }
+
+    auto delay = std::chrono::duration_cast<std::chrono::seconds>(*next_scheduled_run_ - std::chrono::system_clock::now())
+                     .count();
+    if (delay < 1) {
+        delay = 1;
+    }
+
+    schedule_task_ = plugin_.getServer().getScheduler().runTaskLater(
+        plugin_, [this]() { onScheduledIntervalTick(); }, static_cast<std::uint64_t>(delay) * 20ULL);
 }
 
 void BackupManager::persistRuntimeState() const
@@ -708,6 +726,8 @@ void BackupManager::clearRuntimeState()
 
 void BackupManager::maybeRunMissedIntervalBackupOnStartup(const std::chrono::system_clock::time_point &persisted_next_run)
 {
+    plugin_.getLogger().info("Queueing a missed interval backup for the persisted run at '{}'.",
+                             timePointToFileTime(persisted_next_run));
     plugin_.getServer().getScheduler().runTaskLater(plugin_, [this]() {
         std::string error;
         if (!startScheduledBackup("schedule", error) && !error.empty()) {
@@ -803,13 +823,21 @@ void BackupManager::onScheduledIntervalTick()
         return;
     }
 
-    next_scheduled_run_ = std::chrono::system_clock::now() + std::chrono::minutes(std::max(1, config_.schedule.interval_minutes));
-    persistRuntimeState();
+    const auto now = std::chrono::system_clock::now();
+    if (next_scheduled_run_ && now + std::chrono::seconds(5) < *next_scheduled_run_) {
+        plugin_.getLogger().warning("Ignoring an early interval schedule tick; next run is '{}'.",
+                                    timePointToFileTime(*next_scheduled_run_));
+        return;
+    }
 
     std::string error;
     if (!startScheduledBackup("schedule", error) && !error.empty()) {
         plugin_.getLogger().warning("Scheduled backup skipped: {}", error);
     }
+
+    next_scheduled_run_ = now + std::chrono::minutes(std::max(1, config_.schedule.interval_minutes));
+    persistRuntimeState();
+    armIntervalSchedule();
 }
 
 void BackupManager::onScheduledCronTick()
@@ -899,7 +927,7 @@ void BackupManager::onPhaseMonitorTick()
         return;
     }
 
-    if (current_->snapshot_future.valid() &&
+    if (current_ && current_->snapshot_future.valid() &&
         current_->snapshot_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
         const auto snapshot = current_->snapshot_future.get();
         resumeSaveIfNeeded();
