@@ -18,18 +18,25 @@ endif()
 include(FetchContent)
 
 set(LIBCXX_ROOT "${CMAKE_SOURCE_DIR}/.deps/local-libcxx/root")
-set(LIBCXX_INCLUDE_DIR "${LIBCXX_ROOT}/usr/include/c++/v1")
-set(LIBCXX_LIBRARY_DIR "${LIBCXX_ROOT}/usr/lib/llvm-18/lib")
+set(LIBCXX_INCLUDE_DIR "")
+set(LIBCXX_LIBRARY_DIR "")
 
 if(UNIX)
-    if(NOT EXISTS "${LIBCXX_INCLUDE_DIR}" OR NOT EXISTS "${LIBCXX_LIBRARY_DIR}/libc++.a")
+    if(EXISTS "/usr/include/c++/v1")
+        set(LIBCXX_INCLUDE_DIR "/usr/include/c++/v1")
+    elseif(EXISTS "${LIBCXX_ROOT}/usr/include/c++/v1")
+        set(LIBCXX_INCLUDE_DIR "${LIBCXX_ROOT}/usr/include/c++/v1")
+        set(LIBCXX_LIBRARY_DIR "${LIBCXX_ROOT}/usr/lib/llvm-18/lib")
+    else()
         message(FATAL_ERROR
-            "Missing local libc++ toolchain. Run scripts/setup-local-libcxx.sh first."
+            "Unable to find libc++ headers. Install system libc++ or run scripts/setup-local-libcxx.sh."
         )
     endif()
 
     include_directories(SYSTEM BEFORE "${LIBCXX_INCLUDE_DIR}")
-    link_directories("${LIBCXX_LIBRARY_DIR}")
+    if(LIBCXX_LIBRARY_DIR)
+        link_directories("${LIBCXX_LIBRARY_DIR}")
+    endif()
 endif()
 
 FetchContent_Declare(
@@ -62,7 +69,14 @@ set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_FUZZERS OFF CACHE BOOL "" FORCE)
 set(INSTALL_PROJECT OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(endstone nlohmann_json croncpp miniz)
+set_target_properties(miniz PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-endstone_add_plugin(${PROJECT_NAME} src/backupper_plugin.cpp)
-target_include_directories(${PROJECT_NAME} PRIVATE include)
+endstone_add_plugin(
+    ${PROJECT_NAME}
+    src/archive_writer.cpp
+    src/backup_manager.cpp
+    src/backupper_config.cpp
+    src/backupper_plugin.cpp
+)
+target_include_directories(${PROJECT_NAME} PRIVATE include ${croncpp_SOURCE_DIR}/include)
 target_link_libraries(${PROJECT_NAME} PRIVATE nlohmann_json::nlohmann_json miniz)
