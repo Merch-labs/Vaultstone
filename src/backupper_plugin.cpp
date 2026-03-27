@@ -1,5 +1,25 @@
 #include "backupper_plugin.h"
 
+namespace {
+
+bool parsePositiveInt(const std::string &value, int &parsed)
+{
+    try {
+        std::size_t consumed = 0;
+        const int result = std::stoi(value, &consumed);
+        if (consumed != value.size() || result < 1) {
+            return false;
+        }
+        parsed = result;
+        return true;
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+}  // namespace
+
 ENDSTONE_PLUGIN("backupper", "0.1.0", BackupperPlugin)
 {
     prefix = "Backupper";
@@ -136,7 +156,15 @@ bool BackupperPlugin::onCommand(endstone::CommandSender &sender, const endstone:
     }
 
     if (subcommand == "list") {
-        const auto limit = args.size() > 1 ? static_cast<std::size_t>(std::max(1, std::stoi(args[1]))) : 10U;
+        std::size_t limit = 10;
+        if (args.size() > 1) {
+            int parsed_limit = 0;
+            if (!parsePositiveInt(args[1], parsed_limit)) {
+                sender.sendErrorMessage("Usage: /backupper list [limit: positive integer]");
+                return true;
+            }
+            limit = static_cast<std::size_t>(parsed_limit);
+        }
         const auto backups = manager_->listBackups(limit);
         if (backups.empty()) {
             sender.sendMessage("No backups found.");
