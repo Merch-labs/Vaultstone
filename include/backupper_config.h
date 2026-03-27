@@ -13,9 +13,13 @@ struct BackupTargetConfig {
 
 struct RetentionConfig {
     int max_backups = 20;
+    int min_backups_to_keep = 1;
     int max_age_days = 14;
     int max_total_size_mb = 10240;
     bool prune_on_startup = false;
+    bool auto_prune_after_manual_backup = true;
+    bool auto_prune_after_scheduled_backup = true;
+    bool auto_prune_after_pre_restore_backup = false;
 };
 
 struct ScheduleConfig {
@@ -26,6 +30,7 @@ struct ScheduleConfig {
     std::vector<std::string> clock_times_local = {"03:00:00"};
     bool run_on_startup = false;
     bool skip_when_no_players = false;
+    bool only_when_no_players = false;
     bool reset_interval_on_manual_backup = true;
     bool reset_interval_on_restore = true;
     bool reset_interval_on_server_start = true;
@@ -35,6 +40,9 @@ struct ScheduleConfig {
 
 struct RestoreConfig {
     bool require_no_players = true;
+    bool create_backup_before_restore = true;
+    bool allow_latest_selector = true;
+    bool allow_named_restore = true;
     bool shutdown_after_restore = true;
     int shutdown_delay_seconds = 3;
     bool prune_backups_after_restore = false;
@@ -44,6 +52,7 @@ struct RestoreConfig {
 
 struct NotificationConfig {
     bool broadcast = true;
+    bool notify_command_sender_only = false;
     int countdown_seconds = 5;
     std::string start_message = "Backup starting in ${countdown_seconds} seconds.";
     std::string copy_message = "Backup in progress. World writes are paused for a moment.";
@@ -59,6 +68,7 @@ struct BackupConfig {
     int copy_threads = 4;
     int save_query_interval_ticks = 20;
     int save_query_timeout_ticks = 600;
+    int minimum_free_space_mb = 0;
     bool verify_archive_after_creation = true;
     bool keep_staging_on_failure = false;
     bool prune_after_backup = true;

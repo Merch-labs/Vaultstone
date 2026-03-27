@@ -100,6 +100,11 @@ private:
         bool save_hold_active = false;
     };
 
+    struct PendingRestoreRequest {
+        std::string requested_by;
+        StoredBackup backup;
+    };
+
     struct RestoreResult {
         bool ok = false;
         std::string error;
@@ -131,6 +136,7 @@ private:
     bool startBackupRequest(const std::string &trigger, const std::string &requested_by, const std::string &label,
                             std::string &error);
     bool startRestoreRequest(const std::string &requested_by, const StoredBackup &backup, std::string &error);
+    bool startRestoreRequestNow(const std::string &requested_by, const StoredBackup &backup, std::string &error);
     void beginBackup(std::shared_ptr<BackupContext> context);
     void onSaveQueryTick();
     void onPhaseMonitorTick();
@@ -144,6 +150,7 @@ private:
     bool shouldSkipScheduledBackup(std::string &reason) const;
     void updateScheduleAfterSuccessfulBackup(const BackupSummary &summary);
     void updateScheduleAfterSuccessfulRestore();
+    bool maybeStartQueuedRestore(std::string &error);
     void restartIntervalScheduleFrom(const std::chrono::system_clock::time_point &time_point);
     void armIntervalSchedule();
     void persistRuntimeState() const;
@@ -167,10 +174,14 @@ private:
     void broadcastRestoreSuccess(const TemplateValues &values) const;
 
     [[nodiscard]] bool isBusy() const;
+    [[nodiscard]] bool canRestoreSelector(const std::string &selector, std::string &error) const;
+    [[nodiscard]] bool hasEnoughFreeSpace(const std::filesystem::path &path, std::string &error) const;
+    [[nodiscard]] bool shouldAutoPruneAfterBackup(const std::string &trigger) const;
     [[nodiscard]] std::filesystem::path getServerRoot() const;
     [[nodiscard]] std::filesystem::path getConfigPath() const;
     [[nodiscard]] std::filesystem::path getStatePath() const;
     [[nodiscard]] std::string readLevelName() const;
+    void sendNotificationToRequester(const std::string &requested_by, const std::string &message, bool error) const;
     [[nodiscard]] TemplateValues buildTemplateValues(const std::string &trigger, const std::string &requested_by,
                                                      const std::string &label) const;
     [[nodiscard]] std::string renderTemplate(const std::string &input, const TemplateValues &values) const;
@@ -196,6 +207,7 @@ private:
     std::shared_ptr<endstone::Task> save_query_task_;
     std::shared_ptr<endstone::Task> phase_monitor_task_;
     std::shared_ptr<endstone::Task> schedule_task_;
+    std::optional<PendingRestoreRequest> pending_restore_;
     std::optional<BackupSummary> last_backup_;
     std::optional<std::chrono::system_clock::time_point> next_scheduled_run_;
     std::string last_error_;

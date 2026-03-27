@@ -17,6 +17,7 @@
 #include <utility>
 
 #include <endstone/command/command_sender_wrapper.h>
+#include <endstone/player.h>
 #include <croncpp.h>
 #include <nlohmann/json.hpp>
 
@@ -197,6 +198,9 @@ std::size_t pruneBackupDirectory(const BackupConfig &config, const fs::path &bac
     for (std::size_t index = 0; index < backups.size(); ++index) {
         const auto &backup = backups[index];
         if (!keep_path.empty() && fs::exists(keep_path) && fs::equivalent(backup.path, keep_path)) {
+            continue;
+        }
+        if (index < static_cast<std::size_t>(config.retention.min_backups_to_keep)) {
             continue;
         }
 
@@ -388,6 +392,10 @@ bool BackupManager::startManualBackup(const std::string &requested_by, const std
 
 bool BackupManager::startRestore(const std::string &requested_by, const std::string &backup_selector, std::string &error)
 {
+    if (!canRestoreSelector(backup_selector, error)) {
+        return false;
+    }
+
     const auto backup = findBackup(backup_selector);
     if (!backup) {
         error = "No backup found with that name.";
@@ -440,6 +448,9 @@ bool BackupManager::startBackupRequest(const std::string &trigger, const std::st
     context->started_at = std::chrono::system_clock::now();
     context->values = buildTemplateValues(trigger, requested_by, label);
     context->resolved_targets = resolveTargets(config_, context->values);
+    if (!hasEnoughFreeSpace(context->server_root / config_.backup_directory, error)) {
+        return false;
+    }
     context->values.backup_name = sanitizeName(renderTemplate(config_.name_template, context->values));
     context->staging_root = plugin_.getDataFolder() / config_.temporary_directory / context->values.backup_name;
     context->output_path = context->backup_root / context->values.backup_name;
@@ -460,6 +471,26 @@ bool BackupManager::startBackupRequest(const std::string &trigger, const std::st
 }
 
 bool BackupManager::startRestoreRequest(const std::string &requested_by, const StoredBackup &backup, std::string &error)
+{
+    if (isBusy()) {
+        error = "Another backup or restore operation is already running.";
+        return false;
+    }
+    if (config_.restore.create_backup_before_restore) {
+        pending_restore_ = PendingRestoreRequest{requested_by, backup};
+        const std::string safety_label = "before_restore_" + sanitizeName(backup.name);
+        if (!startBackupRequest("pre_restore", requested_by, safety_label, error)) {
+            pending_restore_.reset();
+            return false;
+        }
+        error.clear();
+        return true;
+    }
+
+    return startRestoreRequestNow(requested_by, backup, error);
+}
+
+bool BackupManager::startRestoreRequestNow(const std::string &requested_by, const StoredBackup &backup, std::string &error)
 {
     if (isBusy()) {
         error = "Another backup or restore operation is already running.";
@@ -501,6 +532,9 @@ void BackupManager::sendStatus(endstone::CommandSender &sender) const
     sender.sendMessage("Config: {}", getConfigPath().string());
     sender.sendMessage("Backup directory: {}", config_.backup_directory);
     sender.sendMessage("Format: {}", config_.archive_format);
+    sender.sendMessage("Minimum free space: {}",
+                       config_.minimum_free_space_mb > 0 ? fmt::format("{} MB", config_.minimum_free_space_mb)
+                                                         : std::string("disabled"));
     sender.sendMessage("Schedule: {} ({})", runtime_schedule_enabled_ ? "running" : "stopped", config_.schedule.mode);
     if (config_.schedule.mode == "interval") {
         sender.sendMessage("Interval resets: manual={}, restart={}, restore={}",
@@ -523,6 +557,10 @@ void BackupManager::sendStatus(endstone::CommandSender &sender) const
     if (restore_current_) {
         sender.sendMessage("Current restore: {}", restore_current_->backup.name);
         sender.sendMessage("Restore requested by: {}", restore_current_->requested_by);
+    }
+    if (pending_restore_) {
+        sender.sendMessage("Queued restore: {} (requested by {})", pending_restore_->backup.name,
+                           pending_restore_->requested_by);
     }
 
     if (last_backup_) {
@@ -989,6 +1027,11 @@ void BackupManager::finishFailure(const std::string &error)
             fs::remove_all(current_->staging_root);
         }
         broadcastFailure(current_->values, error);
+        if (current_->trigger == "pre_restore" && pending_restore_) {
+            sendNotificationToRequester(pending_restore_->requested_by,
+                                        fmt::format("Restore cancelled because the safety backup failed: {}", error), true);
+            pending_restore_.reset();
+        }
     }
 
     last_error_ = error;
@@ -1035,6 +1078,13 @@ void BackupManager::finishSuccess(const FinalizeResult &result)
     broadcastSuccess(result.summary);
     plugin_.getLogger().info("Backup '{}' finished in {}.", result.summary.name, formatDuration(result.summary.duration));
     current_.reset();
+
+    if (result.summary.trigger == "pre_restore") {
+        std::string error;
+        if (!maybeStartQueuedRestore(error) && !error.empty()) {
+            finishRestoreFailure(error);
+        }
+    }
 }
 
 void BackupManager::finishRestoreSuccess(const RestoreResult &result)
@@ -1104,43 +1154,61 @@ void BackupManager::broadcastMessage(const std::string &message) const
 
 void BackupManager::broadcastFailure(const TemplateValues &values, const std::string &error) const
 {
-    if (!config_.notifications.broadcast) {
-        return;
-    }
     auto copy = values;
     copy.error = error;
-    broadcastMessage(renderTemplate(config_.notifications.failure_message, copy));
+    const auto message = renderTemplate(config_.notifications.failure_message, copy);
+    if (config_.notifications.notify_command_sender_only &&
+        (values.trigger == "manual" || values.trigger == "pre_restore")) {
+        sendNotificationToRequester(values.requested_by, message, true);
+        return;
+    }
+    if (config_.notifications.broadcast) {
+        broadcastMessage(message);
+    }
 }
 
 void BackupManager::broadcastSuccess(const BackupSummary &summary) const
 {
-    if (!config_.notifications.broadcast) {
-        return;
-    }
     TemplateValues values = buildTemplateValues(summary.trigger, summary.requested_by, summary.label);
     values.backup_name = summary.name;
     values.duration = formatDuration(summary.duration);
-    broadcastMessage(renderTemplate(config_.notifications.success_message, values));
+    const auto message = renderTemplate(config_.notifications.success_message, values);
+    if (config_.notifications.notify_command_sender_only &&
+        (summary.trigger == "manual" || summary.trigger == "pre_restore")) {
+        sendNotificationToRequester(summary.requested_by, message, false);
+        return;
+    }
+    if (config_.notifications.broadcast) {
+        broadcastMessage(message);
+    }
 }
 
 void BackupManager::broadcastRestoreFailure(const TemplateValues &values, const std::string &error) const
 {
-    if (!config_.notifications.broadcast) {
-        return;
-    }
     auto copy = values;
     copy.error = error;
-    broadcastMessage(renderTemplate(config_.restore.failure_message, copy));
+    const auto message = renderTemplate(config_.restore.failure_message, copy);
+    if (config_.notifications.notify_command_sender_only) {
+        sendNotificationToRequester(values.requested_by, message, true);
+        return;
+    }
+    if (config_.notifications.broadcast) {
+        broadcastMessage(message);
+    }
 }
 
 void BackupManager::broadcastRestoreSuccess(const TemplateValues &values) const
 {
-    if (!config_.notifications.broadcast) {
-        return;
-    }
     auto copy = values;
     copy.shutdown_delay_seconds = std::to_string(config_.restore.shutdown_delay_seconds);
-    broadcastMessage(renderTemplate(config_.restore.success_message, copy));
+    const auto message = renderTemplate(config_.restore.success_message, copy);
+    if (config_.notifications.notify_command_sender_only) {
+        sendNotificationToRequester(values.requested_by, message, false);
+        return;
+    }
+    if (config_.notifications.broadcast) {
+        broadcastMessage(message);
+    }
 }
 
 bool BackupManager::startScheduledBackup(const std::string &trigger, std::string &error)
@@ -1158,6 +1226,10 @@ bool BackupManager::shouldSkipScheduledBackup(std::string &reason) const
 {
     if (config_.schedule.skip_when_no_players && plugin_.getServer().getOnlinePlayers().empty()) {
         reason = "No players are online.";
+        return true;
+    }
+    if (config_.schedule.only_when_no_players && !plugin_.getServer().getOnlinePlayers().empty()) {
+        reason = "Players are online.";
         return true;
     }
 
@@ -1185,9 +1257,82 @@ void BackupManager::updateScheduleAfterSuccessfulRestore()
     }
 }
 
+bool BackupManager::maybeStartQueuedRestore(std::string &error)
+{
+    if (!pending_restore_) {
+        error.clear();
+        return true;
+    }
+
+    const auto queued = *pending_restore_;
+    pending_restore_.reset();
+    return startRestoreRequestNow(queued.requested_by, queued.backup, error);
+}
+
 bool BackupManager::isBusy() const
 {
     return static_cast<bool>(current_) || static_cast<bool>(restore_current_);
+}
+
+bool BackupManager::canRestoreSelector(const std::string &selector, std::string &error) const
+{
+    if (selector == "latest") {
+        if (!config_.restore.allow_latest_selector) {
+            error = "Restoring with the 'latest' selector is disabled in the config.";
+            return false;
+        }
+        error.clear();
+        return true;
+    }
+
+    if (!config_.restore.allow_named_restore) {
+        error = "Restoring named backups is disabled in the config.";
+        return false;
+    }
+
+    error.clear();
+    return true;
+}
+
+bool BackupManager::hasEnoughFreeSpace(const fs::path &path, std::string &error) const
+{
+    if (config_.minimum_free_space_mb <= 0) {
+        error.clear();
+        return true;
+    }
+
+    try {
+        const auto available_bytes = fs::space(path).available;
+        const auto required_bytes = static_cast<std::uintmax_t>(config_.minimum_free_space_mb) * 1024ULL * 1024ULL;
+        if (available_bytes < required_bytes) {
+            error = fmt::format("Not enough free space. Required at least {} MB, available {}.",
+                                config_.minimum_free_space_mb, formatBytes(available_bytes));
+            return false;
+        }
+        error.clear();
+        return true;
+    }
+    catch (const std::exception &exception) {
+        error = fmt::format("Unable to check free disk space: {}", exception.what());
+        return false;
+    }
+}
+
+bool BackupManager::shouldAutoPruneAfterBackup(const std::string &trigger) const
+{
+    if (!config_.prune_after_backup) {
+        return false;
+    }
+    if (trigger == "manual") {
+        return config_.retention.auto_prune_after_manual_backup;
+    }
+    if (trigger == "schedule" || trigger == "startup") {
+        return config_.retention.auto_prune_after_scheduled_backup;
+    }
+    if (trigger == "pre_restore") {
+        return config_.retention.auto_prune_after_pre_restore_backup;
+    }
+    return config_.prune_after_backup;
 }
 
 fs::path BackupManager::getServerRoot() const
@@ -1203,6 +1348,34 @@ fs::path BackupManager::getConfigPath() const
 fs::path BackupManager::getStatePath() const
 {
     return plugin_.getDataFolder() / "runtime_state.json";
+}
+
+void BackupManager::sendNotificationToRequester(const std::string &requested_by, const std::string &message,
+                                                const bool error) const
+{
+    if (requested_by.empty() || requested_by == "scheduler") {
+        return;
+    }
+
+    if (auto *player = plugin_.getServer().getPlayer(requested_by)) {
+        if (error) {
+            player->sendErrorMessage("{}", message);
+        }
+        else {
+            player->sendMessage("{}", message);
+        }
+        return;
+    }
+
+    auto &console = plugin_.getServer().getCommandSender();
+    if (requested_by == console.getName()) {
+        if (error) {
+            console.sendErrorMessage("{}", message);
+        }
+        else {
+            console.sendMessage("{}", message);
+        }
+    }
 }
 
 std::string BackupManager::readLevelName() const
@@ -1413,6 +1586,9 @@ std::size_t BackupManager::pruneBackupsInternal(const BackupConfig &config, cons
         if (!keep_path.empty() && fs::exists(keep_path) && fs::equivalent(backup.path, keep_path)) {
             return false;
         }
+        if (index < static_cast<std::size_t>(config.retention.min_backups_to_keep)) {
+            return false;
+        }
 
         if (config.retention.max_age_days > 0) {
             const auto age = now - backup.modified_at;
@@ -1568,7 +1744,15 @@ BackupManager::FinalizeResult BackupManager::finalizeBackup(const BackupContext 
         fs::remove_all(context.staging_root);
 
         std::size_t removed_count = 0;
-        if (context.config.prune_after_backup) {
+        const bool should_auto_prune =
+            context.config.prune_after_backup &&
+            ((context.trigger == "manual" && context.config.retention.auto_prune_after_manual_backup) ||
+             ((context.trigger == "schedule" || context.trigger == "startup") &&
+              context.config.retention.auto_prune_after_scheduled_backup) ||
+             (context.trigger == "pre_restore" && context.config.retention.auto_prune_after_pre_restore_backup) ||
+             (context.trigger != "manual" && context.trigger != "schedule" && context.trigger != "startup" &&
+              context.trigger != "pre_restore"));
+        if (should_auto_prune) {
             removed_count = pruneBackupDirectory(context.config, context.backup_root, context.output_path);
         }
 

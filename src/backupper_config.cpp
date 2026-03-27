@@ -34,9 +34,16 @@ RetentionConfig readRetention(const json &value, const RetentionConfig &defaults
         return retention;
     }
     retention.max_backups = value.value("max_backups", retention.max_backups);
+    retention.min_backups_to_keep = value.value("min_backups_to_keep", retention.min_backups_to_keep);
     retention.max_age_days = value.value("max_age_days", retention.max_age_days);
     retention.max_total_size_mb = value.value("max_total_size_mb", retention.max_total_size_mb);
     retention.prune_on_startup = value.value("prune_on_startup", retention.prune_on_startup);
+    retention.auto_prune_after_manual_backup =
+        value.value("auto_prune_after_manual_backup", retention.auto_prune_after_manual_backup);
+    retention.auto_prune_after_scheduled_backup =
+        value.value("auto_prune_after_scheduled_backup", retention.auto_prune_after_scheduled_backup);
+    retention.auto_prune_after_pre_restore_backup =
+        value.value("auto_prune_after_pre_restore_backup", retention.auto_prune_after_pre_restore_backup);
     return retention;
 }
 
@@ -55,6 +62,7 @@ ScheduleConfig readSchedule(const json &value, const ScheduleConfig &defaults)
     }
     schedule.run_on_startup = value.value("run_on_startup", schedule.run_on_startup);
     schedule.skip_when_no_players = value.value("skip_when_no_players", schedule.skip_when_no_players);
+    schedule.only_when_no_players = value.value("only_when_no_players", schedule.only_when_no_players);
     schedule.reset_interval_on_manual_backup =
         value.value("reset_interval_on_manual_backup", schedule.reset_interval_on_manual_backup);
     schedule.reset_interval_on_restore = value.value("reset_interval_on_restore", schedule.reset_interval_on_restore);
@@ -73,6 +81,9 @@ RestoreConfig readRestore(const json &value, const RestoreConfig &defaults)
         return restore;
     }
     restore.require_no_players = value.value("require_no_players", restore.require_no_players);
+    restore.create_backup_before_restore = value.value("create_backup_before_restore", restore.create_backup_before_restore);
+    restore.allow_latest_selector = value.value("allow_latest_selector", restore.allow_latest_selector);
+    restore.allow_named_restore = value.value("allow_named_restore", restore.allow_named_restore);
     restore.shutdown_after_restore = value.value("shutdown_after_restore", restore.shutdown_after_restore);
     restore.shutdown_delay_seconds = value.value("shutdown_delay_seconds", restore.shutdown_delay_seconds);
     restore.prune_backups_after_restore = value.value("prune_backups_after_restore", restore.prune_backups_after_restore);
@@ -88,6 +99,8 @@ NotificationConfig readNotifications(const json &value, const NotificationConfig
         return notifications;
     }
     notifications.broadcast = value.value("broadcast", notifications.broadcast);
+    notifications.notify_command_sender_only =
+        value.value("notify_command_sender_only", notifications.notify_command_sender_only);
     notifications.countdown_seconds = value.value("countdown_seconds", notifications.countdown_seconds);
     notifications.start_message = value.value("start_message", notifications.start_message);
     notifications.copy_message = value.value("copy_message", notifications.copy_message);
@@ -111,6 +124,7 @@ json toJson(const BackupConfig &config)
         {"copy_threads", config.copy_threads},
         {"save_query_interval_ticks", config.save_query_interval_ticks},
         {"save_query_timeout_ticks", config.save_query_timeout_ticks},
+        {"minimum_free_space_mb", config.minimum_free_space_mb},
         {"verify_archive_after_creation", config.verify_archive_after_creation},
         {"keep_staging_on_failure", config.keep_staging_on_failure},
         {"prune_after_backup", config.prune_after_backup},
@@ -120,9 +134,13 @@ json toJson(const BackupConfig &config)
         {"exclude_patterns", config.exclude_patterns},
         {"retention",
          {{"max_backups", config.retention.max_backups},
+          {"min_backups_to_keep", config.retention.min_backups_to_keep},
           {"max_age_days", config.retention.max_age_days},
           {"max_total_size_mb", config.retention.max_total_size_mb},
-          {"prune_on_startup", config.retention.prune_on_startup}}},
+          {"prune_on_startup", config.retention.prune_on_startup},
+          {"auto_prune_after_manual_backup", config.retention.auto_prune_after_manual_backup},
+          {"auto_prune_after_scheduled_backup", config.retention.auto_prune_after_scheduled_backup},
+          {"auto_prune_after_pre_restore_backup", config.retention.auto_prune_after_pre_restore_backup}}},
         {"schedule",
          {{"enabled", config.schedule.enabled},
           {"mode", config.schedule.mode},
@@ -131,6 +149,7 @@ json toJson(const BackupConfig &config)
           {"clock_times_local", config.schedule.clock_times_local},
           {"run_on_startup", config.schedule.run_on_startup},
           {"skip_when_no_players", config.schedule.skip_when_no_players},
+          {"only_when_no_players", config.schedule.only_when_no_players},
           {"reset_interval_on_manual_backup", config.schedule.reset_interval_on_manual_backup},
           {"reset_interval_on_restore", config.schedule.reset_interval_on_restore},
           {"reset_interval_on_server_start", config.schedule.reset_interval_on_server_start},
@@ -138,6 +157,9 @@ json toJson(const BackupConfig &config)
           {"catch_up_missed_run_on_startup", config.schedule.catch_up_missed_run_on_startup}}},
         {"restore",
          {{"require_no_players", config.restore.require_no_players},
+          {"create_backup_before_restore", config.restore.create_backup_before_restore},
+          {"allow_latest_selector", config.restore.allow_latest_selector},
+          {"allow_named_restore", config.restore.allow_named_restore},
           {"shutdown_after_restore", config.restore.shutdown_after_restore},
           {"shutdown_delay_seconds", config.restore.shutdown_delay_seconds},
           {"prune_backups_after_restore", config.restore.prune_backups_after_restore},
@@ -145,6 +167,7 @@ json toJson(const BackupConfig &config)
           {"failure_message", config.restore.failure_message}}},
         {"notifications",
          {{"broadcast", config.notifications.broadcast},
+          {"notify_command_sender_only", config.notifications.notify_command_sender_only},
           {"countdown_seconds", config.notifications.countdown_seconds},
           {"start_message", config.notifications.start_message},
           {"copy_message", config.notifications.copy_message},
@@ -161,6 +184,9 @@ void validateConfig(const BackupConfig &config)
     if (config.compression_level < 0 || config.compression_level > 9) {
         throw std::runtime_error("compression_level must be between 0 and 9.");
     }
+    if (config.minimum_free_space_mb < 0) {
+        throw std::runtime_error("minimum_free_space_mb must be at least 0.");
+    }
     if (config.copy_threads < 1 || config.copy_threads > 64) {
         throw std::runtime_error("copy_threads must be between 1 and 64.");
     }
@@ -173,11 +199,20 @@ void validateConfig(const BackupConfig &config)
     if (config.targets.empty()) {
         throw std::runtime_error("At least one backup target is required.");
     }
+    if (config.retention.min_backups_to_keep < 0) {
+        throw std::runtime_error("retention.min_backups_to_keep must be at least 0.");
+    }
+    if (config.retention.max_backups > 0 && config.retention.min_backups_to_keep > config.retention.max_backups) {
+        throw std::runtime_error("retention.min_backups_to_keep cannot be greater than retention.max_backups.");
+    }
     if (config.schedule.mode != "interval" && config.schedule.mode != "clock" && config.schedule.mode != "cron") {
         throw std::runtime_error("schedule.mode must be one of 'interval', 'clock', or 'cron'.");
     }
     if (config.schedule.mode == "interval" && config.schedule.interval_minutes < 1) {
         throw std::runtime_error("schedule.interval_minutes must be at least 1 when mode is 'interval'.");
+    }
+    if (config.schedule.skip_when_no_players && config.schedule.only_when_no_players) {
+        throw std::runtime_error("schedule.skip_when_no_players and schedule.only_when_no_players cannot both be true.");
     }
     if (config.schedule.mode == "clock" && config.schedule.clock_times_local.empty()) {
         throw std::runtime_error("schedule.clock_times_local must contain at least one time when mode is 'clock'.");
@@ -264,6 +299,7 @@ BackupConfig loadConfig(const std::filesystem::path &path)
     config.copy_threads = document.value("copy_threads", config.copy_threads);
     config.save_query_interval_ticks = document.value("save_query_interval_ticks", config.save_query_interval_ticks);
     config.save_query_timeout_ticks = document.value("save_query_timeout_ticks", config.save_query_timeout_ticks);
+    config.minimum_free_space_mb = document.value("minimum_free_space_mb", config.minimum_free_space_mb);
     config.verify_archive_after_creation =
         document.value("verify_archive_after_creation", config.verify_archive_after_creation);
     config.keep_staging_on_failure = document.value("keep_staging_on_failure", config.keep_staging_on_failure);

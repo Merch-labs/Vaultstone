@@ -10,10 +10,12 @@
 - ZIP archives written directly in-process, plus directory-format backups when preferred
 - Configurable include targets and exclude patterns
 - Retention controls for count, age, and total backup size
+- Free-space guard before backup creation
 - Manual admin commands for backup, restore, reload, listing, pruning, deleting, and schedule control
 - Interval, cron, or fixed local-time scheduling
 - Optional interval reset behavior for manual backups, restores, and server restarts
 - In-plugin restore flow with safe extraction, manifest validation, and optional post-restore shutdown
+- Optional safety backup before restore and sender-only notifications
 - Debian 12 release build script for broad Linux compatibility
 
 ## Commands
@@ -38,6 +40,7 @@ Important sections:
 - `targets`: files and directories to include in each backup
 - `exclude_patterns`: glob-style filters applied to relative paths
 - `archive_format`: `zip` or `directory`
+- `minimum_free_space_mb`: refuse to start when disk space falls below the configured floor
 - `retention`: max backups, max age, and max total size
 - `schedule`: interval, cron, or fixed-time scheduling, plus interval persistence/reset behavior
 - `restore`: restore safety checks, shutdown behavior, and restore messages
@@ -54,6 +57,24 @@ Useful schedule options:
 - `schedule.reset_interval_on_server_start`: whether restarting the server restarts the interval timer
 - `schedule.persist_interval_state`: whether the next interval run is written to disk
 - `schedule.catch_up_missed_run_on_startup`: optionally run one missed interval backup after startup
+- `schedule.only_when_no_players`: run scheduled backups only while the server is empty
+
+Useful retention options:
+
+- `retention.min_backups_to_keep`: hard floor that pruning will not cross
+- `retention.auto_prune_after_manual_backup`: prune automatically after manual backups
+- `retention.auto_prune_after_scheduled_backup`: prune automatically after scheduled backups
+- `retention.auto_prune_after_pre_restore_backup`: prune automatically after safety backups taken before restore
+
+Useful restore options:
+
+- `restore.create_backup_before_restore`: create a safety backup immediately before applying a restore
+- `restore.allow_latest_selector`: allow or block `/backupper restore latest`
+- `restore.allow_named_restore`: allow or block named restores
+
+Useful notification options:
+
+- `notifications.notify_command_sender_only`: send success and failure messages only to the command sender for manual actions
 
 The default config backs up:
 
@@ -104,3 +125,6 @@ The plugin was validated against an Endstone 0.11.1 Debian 12 server by:
 - running fixed local-time scheduling live with `clock_times_local`
 - creating and validating both ZIP and directory-format backups
 - restoring a real backup with `/backupper restore latest` and verifying `permissions.json` was rolled back successfully
+- verifying a configured free-space floor blocks manual backups
+- verifying sender-only notifications still report completion to the command sender
+- verifying `restore.create_backup_before_restore` writes a `pre_restore` backup before the restore is applied
