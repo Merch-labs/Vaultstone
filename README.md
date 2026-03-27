@@ -77,7 +77,7 @@ Useful follow-up commands:
 | `/vaultstone list [limit]` | List stored backups |
 | `/vaultstone prune` | Apply retention rules immediately |
 | `/vaultstone delete <name>` | Delete a specific backup |
-| `/vaultstone schedule <status|start|stop>` | Inspect or control the scheduler |
+| `/vaultstone schedule status|start|stop` | Inspect or control the scheduler |
 
 Alias:
 
