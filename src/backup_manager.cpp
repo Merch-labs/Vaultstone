@@ -128,10 +128,20 @@ std::regex globToRegex(const std::string &pattern)
     return std::regex(output, std::regex::ECMAScript | std::regex::icase);
 }
 
-bool matchesAnyPattern(const std::string &path, const std::vector<std::string> &patterns)
+std::vector<std::regex> compilePatterns(const std::vector<std::string> &patterns)
+{
+    std::vector<std::regex> compiled;
+    compiled.reserve(patterns.size());
+    for (const auto &pattern : patterns) {
+        compiled.push_back(globToRegex(pattern));
+    }
+    return compiled;
+}
+
+bool matchesAnyPattern(const std::string &path, const std::vector<std::regex> &patterns)
 {
     return std::any_of(patterns.begin(), patterns.end(), [&path](const auto &pattern) {
-        return std::regex_match(path, globToRegex(pattern));
+        return std::regex_match(path, pattern);
     });
 }
 
@@ -1635,6 +1645,7 @@ BackupManager::SnapshotResult BackupManager::createSnapshot(const BackupContext 
         auto effective_excludes = context.config.exclude_patterns;
         effective_excludes.push_back((fs::relative(context.backup_root, context.server_root)).generic_string() + "/**");
         effective_excludes.push_back((fs::relative(context.staging_root.parent_path(), context.server_root)).generic_string() + "/**");
+        const auto compiled_excludes = compilePatterns(effective_excludes);
 
         const auto targets = context.resolved_targets;
         std::vector<std::pair<fs::path, fs::path>> copy_jobs;
@@ -1652,7 +1663,7 @@ BackupManager::SnapshotResult BackupManager::createSnapshot(const BackupContext 
 
             if (fs::is_regular_file(source)) {
                 const auto relative = fs::relative(source, context.server_root).generic_string();
-                if (matchesAnyPattern(relative, effective_excludes)) {
+                if (matchesAnyPattern(relative, compiled_excludes)) {
                     continue;
                 }
                 const auto destination = payload_root / relative;
@@ -1667,7 +1678,7 @@ BackupManager::SnapshotResult BackupManager::createSnapshot(const BackupContext 
                     continue;
                 }
                 const auto relative = fs::relative(entry.path(), context.server_root).generic_string();
-                if (matchesAnyPattern(relative, effective_excludes)) {
+                if (matchesAnyPattern(relative, compiled_excludes)) {
                     continue;
                 }
                 const auto destination = payload_root / relative;
