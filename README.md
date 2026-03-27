@@ -7,7 +7,7 @@
 - Native C++ Endstone plugin with no external runtime services
 - JSON configuration generated automatically on first start
 - Hot backups using Bedrock's save coordination commands
-- ZIP archives written directly in-process, plus directory-format backups when preferred
+- ZIP, TAR, and TAR.GZ archives written directly in-process, plus directory-format backups when preferred
 - Configurable include targets and exclude patterns
 - Retention controls for count, age, and total backup size
 - Free-space guard before backup creation
@@ -39,7 +39,7 @@ Important sections:
 
 - `targets`: files and directories to include in each backup
 - `exclude_patterns`: glob-style filters applied to relative paths
-- `archive_format`: `zip` or `directory`
+- `archive_format`: `zip`, `tar`, `tar.gz`, or `directory`
 - `minimum_free_space_mb`: refuse to start when disk space falls below the configured floor
 - `retention`: max backups, max age, and max total size
 - `schedule`: interval, cron, or fixed-time scheduling, plus interval persistence/reset behavior
@@ -125,7 +125,8 @@ The plugin was validated against an Endstone 0.11.1 Debian 12 server by:
 - confirming `reset_interval_on_server_start` on and off across real server restarts
 - running cron scheduling live with `*/15 * * * * *`
 - running fixed local-time scheduling live with `clock_times_local`
-- creating and validating both ZIP and directory-format backups
+- creating and validating ZIP and directory-format backups
+- round-tripping `tar` and `tar.gz` archives through the in-process archive layer with a local smoke test
 - restoring a real backup with `/backupper restore latest` and verifying `permissions.json` was rolled back successfully
 - verifying a configured free-space floor blocks manual backups
 - verifying sender-only notifications still report completion to the command sender

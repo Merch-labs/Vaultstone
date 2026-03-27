@@ -499,8 +499,8 @@ bool BackupManager::startBackupRequest(const std::string &trigger, const std::st
     context->values.backup_name = sanitizeName(renderTemplate(config_.name_template, context->values));
     context->staging_root = plugin_.getDataFolder() / config_.temporary_directory / context->values.backup_name;
     context->output_path = context->backup_root / context->values.backup_name;
-    if (config_.archive_format == "zip") {
-        context->output_path += ".zip";
+    if (const auto extension = archiveFormatFileExtension(config_.archive_format); !extension.empty()) {
+        context->output_path += extension;
     }
     context->values.backup_name = context->output_path.filename().string();
 
@@ -1736,17 +1736,17 @@ BackupManager::FinalizeResult BackupManager::finalizeBackup(const BackupContext 
         temp_output_path = context.backup_root / (context.output_path.filename().string() + ".part");
         fs::remove_all(temp_output_path);
 
-        if (context.config.archive_format == "zip") {
-            writeZipArchive(temp_output_path, snapshot.archive_entries, manifest_text, context.config.compression_level,
-                            context.config.verify_archive_after_creation);
-        }
-        else {
+        if (context.config.archive_format == "directory") {
             fs::create_directories(temp_output_path.parent_path());
             fs::rename(snapshot.payload_root, temp_output_path);
             if (!manifest_text.empty()) {
                 std::ofstream output(temp_output_path / "backupper-manifest.json");
                 output << manifest_text << '\n';
             }
+        }
+        else {
+            writeArchive(temp_output_path, context.config.archive_format, snapshot.archive_entries, manifest_text,
+                         context.config.compression_level, context.config.verify_archive_after_creation);
         }
 
         if (context.config.retention.max_backups > 0 &&
@@ -1811,11 +1811,12 @@ BackupManager::RestoreResult BackupManager::performRestore(const RestoreContext 
         const auto extraction_root = context.temp_root / "payload";
         fs::create_directories(extraction_root);
 
-        if (fs::is_directory(context.backup.path)) {
+        const auto archive_format = detectArchiveFormat(context.backup.path);
+        if (archive_format == "directory") {
             copyTree(context.backup.path, extraction_root);
         }
         else {
-            extractZipArchive(context.backup.path, extraction_root);
+            extractArchive(context.backup.path, archive_format, extraction_root);
         }
 
         const auto manifest_path = extraction_root / "backupper-manifest.json";

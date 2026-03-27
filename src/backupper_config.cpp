@@ -1,5 +1,7 @@
 #include "backupper_config.h"
 
+#include "archive_writer.h"
+
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -180,8 +182,8 @@ json toJson(const BackupConfig &config)
 
 void validateConfig(const BackupConfig &config)
 {
-    if (config.archive_format != "zip" && config.archive_format != "directory") {
-        throw std::runtime_error("archive_format must be either 'zip' or 'directory'.");
+    if (!isSupportedArchiveFormat(config.archive_format)) {
+        throw std::runtime_error("archive_format must be one of 'zip', 'tar', 'tar.gz', or 'directory'.");
     }
     if (config.compression_level < 0 || config.compression_level > 9) {
         throw std::runtime_error("compression_level must be between 0 and 9.");
