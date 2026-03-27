@@ -5,7 +5,7 @@
 ## Features
 
 - Native C++ Endstone plugin with no external backup services
-- JSON configuration generated automatically on first start
+- JSON configuration generated automatically on first startup
 - Hot backups using Bedrock save coordination commands
 - In-process `zip`, `tar`, `tar.gz`, and `directory` backup formats
 - Configurable targets and glob-style exclude patterns
@@ -72,12 +72,12 @@ Useful follow-up commands:
 | --- | --- |
 | `/vaultstone status` | Show plugin status, running operations, next scheduled run, and last error |
 | `/vaultstone create [label]` | Start a manual backup |
-| `/vaultstone restore <name|latest>` | Restore a stored backup |
+| `/vaultstone restore <backup-name>` or `/vaultstone restore latest` | Restore a stored backup |
 | `/vaultstone reload` | Reload `config.json` |
 | `/vaultstone list [limit]` | List stored backups |
 | `/vaultstone prune` | Apply retention rules immediately |
 | `/vaultstone delete <name>` | Delete a specific backup |
-| `/vaultstone schedule status|start|stop` | Inspect or control the scheduler |
+| `/vaultstone schedule status`, `/vaultstone schedule start`, or `/vaultstone schedule stop` | Inspect or control the scheduler |
 
 Alias:
 
@@ -423,7 +423,7 @@ Runtime validation performed so far:
 - loaded successfully on an Endstone `0.11.1` test server running Debian 12
 - manual backup flow with real `save hold`, `save query`, and `save resume`
 - automatic interval scheduling
-- cron scheduling with `*/15 * * * * *`
+- cron scheduling using the expression `*/15 * * * * *`
 - fixed local-time scheduling with `clock_times_local`
 - real backup creation, listing, deletion, pruning, and reload commands
 - restore of a real backup with `permissions.json` rollback verification
