@@ -186,17 +186,16 @@ std::vector<StoredBackup> collectStoredBackupsFromRoot(const fs::path &backup_ro
     return backups;
 }
 
-std::size_t pruneStoredBackups(const BackupConfig &config, const std::vector<StoredBackup> &backups,
-                               const fs::path &keep_path, std::vector<std::string> *removed_names)
+std::vector<std::size_t> selectBackupsToPrune(const BackupConfig &config, const std::vector<StoredBackup> &backups,
+                                              const fs::path &keep_path)
 {
+    std::vector<std::size_t> indexes;
     std::uintmax_t total_size = 0;
     for (const auto &backup : backups) {
         total_size += backup.size_bytes;
     }
 
     const auto now = fs::file_time_type::clock::now();
-    std::size_t removed = 0;
-
     for (std::size_t index = 0; index < backups.size(); ++index) {
         const auto &backup = backups[index];
         if (!keep_path.empty() && fs::exists(keep_path) && fs::equivalent(backup.path, keep_path)) {
@@ -230,6 +229,20 @@ std::size_t pruneStoredBackups(const BackupConfig &config, const std::vector<Sto
             continue;
         }
 
+        indexes.push_back(index);
+    }
+
+    return indexes;
+}
+
+std::size_t pruneStoredBackups(const BackupConfig &config, const std::vector<StoredBackup> &backups,
+                               const fs::path &keep_path, std::vector<std::string> *removed_names)
+{
+    const auto indexes = selectBackupsToPrune(config, backups, keep_path);
+    std::size_t removed = 0;
+
+    for (const auto index : indexes) {
+        const auto &backup = backups[index];
         fs::remove_all(backup.path);
         ++removed;
         if (removed_names != nullptr) {
@@ -470,7 +483,7 @@ bool BackupManager::startBackupRequest(const std::string &trigger, const std::st
     if (!hasEnoughFreeSpace(context->server_root / config_.backup_directory, error)) {
         return false;
     }
-    if (!enforceMaxBackupPolicyBeforeBackup(context->config, context->backup_root, error)) {
+    if (!enforceMaxBackupPolicyBeforeBackup(context->config, context->backup_root, trigger, error)) {
         return false;
     }
     context->values.backup_name = sanitizeName(renderTemplate(config_.name_template, context->values));
@@ -1358,7 +1371,7 @@ bool BackupManager::shouldAutoPruneAfterBackup(const std::string &trigger) const
 }
 
 bool BackupManager::enforceMaxBackupPolicyBeforeBackup(const BackupConfig &config, const fs::path &backup_root,
-                                                       std::string &error) const
+                                                       const std::string &trigger, std::string &error) const
 {
     if (config.retention.max_backups <= 0 || config.retention.when_at_max_backups != "refuse_new_backup") {
         error.clear();
@@ -1369,6 +1382,15 @@ bool BackupManager::enforceMaxBackupPolicyBeforeBackup(const BackupConfig &confi
     if (backups.size() < static_cast<std::size_t>(config.retention.max_backups)) {
         error.clear();
         return true;
+    }
+
+    if (shouldAutoPruneAfterBackup(trigger)) {
+        const auto removed_indexes = selectBackupsToPrune(config, backups, {});
+        const auto retained_count = backups.size() - removed_indexes.size();
+        if (retained_count < static_cast<std::size_t>(config.retention.max_backups)) {
+            error.clear();
+            return true;
+        }
     }
 
     error = fmt::format("Maximum backup count ({}) has been reached. Refusing to create a new backup.",
