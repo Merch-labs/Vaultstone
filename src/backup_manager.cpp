@@ -186,35 +186,17 @@ std::vector<StoredBackup> collectStoredBackupsFromRoot(const fs::path &backup_ro
     return backups;
 }
 
-std::size_t pruneBackupDirectory(const BackupConfig &config, const fs::path &backup_root, const fs::path &keep_path)
+std::size_t pruneStoredBackups(const BackupConfig &config, const std::vector<StoredBackup> &backups,
+                               const fs::path &keep_path, std::vector<std::string> *removed_names)
 {
-    struct BackupEntry {
-        fs::path path;
-        std::uintmax_t size_bytes = 0;
-        fs::file_time_type modified_at{};
-    };
-
-    std::vector<BackupEntry> backups;
-    if (fs::exists(backup_root)) {
-        for (const auto &entry : fs::directory_iterator(backup_root)) {
-            if (!entry.is_regular_file() && !entry.is_directory()) {
-                continue;
-            }
-            backups.push_back({entry.path(), computePathSize(entry.path()), entry.last_write_time()});
-        }
-    }
-
-    std::sort(backups.begin(), backups.end(), [](const auto &left, const auto &right) {
-        return left.modified_at > right.modified_at;
-    });
-
     std::uintmax_t total_size = 0;
-    for (const auto &entry : backups) {
-        total_size += entry.size_bytes;
+    for (const auto &backup : backups) {
+        total_size += backup.size_bytes;
     }
 
     const auto now = fs::file_time_type::clock::now();
     std::size_t removed = 0;
+
     for (std::size_t index = 0; index < backups.size(); ++index) {
         const auto &backup = backups[index];
         if (!keep_path.empty() && fs::exists(keep_path) && fs::equivalent(backup.path, keep_path)) {
@@ -250,9 +232,18 @@ std::size_t pruneBackupDirectory(const BackupConfig &config, const fs::path &bac
 
         fs::remove_all(backup.path);
         ++removed;
+        if (removed_names != nullptr) {
+            removed_names->push_back(backup.name);
+        }
     }
 
     return removed;
+}
+
+std::size_t pruneBackupDirectory(const BackupConfig &config, const fs::path &backup_root, const fs::path &keep_path,
+                                 std::vector<std::string> *removed_names = nullptr)
+{
+    return pruneStoredBackups(config, collectStoredBackupsFromRoot(backup_root), keep_path, removed_names);
 }
 
 void copyFilesParallel(const std::vector<std::pair<fs::path, fs::path>> &copies, const int thread_count)
@@ -1607,59 +1598,7 @@ std::optional<StoredBackup> BackupManager::findBackup(const std::string &selecto
 std::size_t BackupManager::pruneBackupsInternal(const BackupConfig &config, const fs::path &keep_path,
                                                 std::vector<std::string> *removed_names) const
 {
-    auto backups = collectBackups(config);
-    std::size_t removed = 0;
-    std::uintmax_t total_size = 0;
-    for (const auto &backup : backups) {
-        total_size += backup.size_bytes;
-    }
-
-    const auto now = fs::file_time_type::clock::now();
-
-    auto should_remove = [&](std::size_t index, const StoredBackup &backup) {
-        if (!keep_path.empty() && fs::exists(keep_path) && fs::equivalent(backup.path, keep_path)) {
-            return false;
-        }
-        if (index < static_cast<std::size_t>(config.retention.min_backups_to_keep)) {
-            return false;
-        }
-
-        if (config.retention.max_age_days > 0) {
-            const auto age = now - backup.modified_at;
-            const auto max_age = std::chrono::hours(24 * config.retention.max_age_days);
-            if (age > max_age) {
-                return true;
-            }
-        }
-
-        if (config.retention.max_backups > 0 && index >= static_cast<std::size_t>(config.retention.max_backups)) {
-            return true;
-        }
-
-        if (config.retention.max_total_size_mb > 0) {
-            const auto limit = static_cast<std::uintmax_t>(config.retention.max_total_size_mb) * 1024U * 1024U;
-            if (total_size > limit) {
-                total_size -= backup.size_bytes;
-                return true;
-            }
-        }
-
-        return false;
-    };
-
-    for (std::size_t index = 0; index < backups.size(); ++index) {
-        const auto &backup = backups[index];
-        if (!should_remove(index, backup)) {
-            continue;
-        }
-        fs::remove_all(backup.path);
-        ++removed;
-        if (removed_names != nullptr) {
-            removed_names->push_back(backup.name);
-        }
-    }
-
-    return removed;
+    return pruneStoredBackups(config, collectBackups(config), keep_path, removed_names);
 }
 
 BackupManager::SnapshotResult BackupManager::createSnapshot(const BackupContext &context)
