@@ -124,6 +124,7 @@ private:
         std::filesystem::path staging_root;
         std::filesystem::path output_path;
         std::filesystem::path config_path;
+        std::vector<std::filesystem::path> protected_paths;
         std::vector<BackupTargetConfig> resolved_targets;
         std::chrono::system_clock::time_point started_at;
         int save_query_attempts = 0;

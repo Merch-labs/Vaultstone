@@ -557,34 +557,39 @@ void decompressGzipFile(const fs::path &archive_path, const fs::path &destinatio
     bool stream_finished = false;
 
     try {
-        while (remaining > 0 && !stream_finished) {
-            const auto chunk = static_cast<std::size_t>(std::min<std::uint64_t>(remaining, input_buffer.size()));
-            input.read(reinterpret_cast<char *>(input_buffer.data()), static_cast<std::streamsize>(chunk));
-            if (static_cast<std::size_t>(input.gcount()) != chunk) {
-                throw std::runtime_error("Unexpected end of gzip archive.");
+        while (!stream_finished) {
+            if (stream.avail_in == 0 && remaining > 0) {
+                const auto chunk = static_cast<std::size_t>(std::min<std::uint64_t>(remaining, input_buffer.size()));
+                input.read(reinterpret_cast<char *>(input_buffer.data()), static_cast<std::streamsize>(chunk));
+                if (static_cast<std::size_t>(input.gcount()) != chunk) {
+                    throw std::runtime_error("Unexpected end of gzip archive.");
+                }
+                remaining -= chunk;
+                stream.next_in = input_buffer.data();
+                stream.avail_in = static_cast<mz_uint>(chunk);
             }
-            remaining -= chunk;
 
-            stream.next_in = input_buffer.data();
-            stream.avail_in = static_cast<mz_uint>(chunk);
-            while (stream.avail_in > 0) {
-                stream.next_out = output_buffer.data();
-                stream.avail_out = static_cast<mz_uint>(output_buffer.size());
-                const auto status = mz_inflate(&stream, MZ_NO_FLUSH);
-                const auto produced = output_buffer.size() - stream.avail_out;
-                if (produced > 0) {
-                    crc32_value = static_cast<std::uint32_t>(mz_crc32(crc32_value, output_buffer.data(), produced));
-                    output_size += static_cast<std::uint32_t>(produced);
-                    output.write(reinterpret_cast<const char *>(output_buffer.data()),
-                                 static_cast<std::streamsize>(produced));
-                }
-                if (status == MZ_STREAM_END) {
-                    stream_finished = true;
-                    break;
-                }
-                if (status != MZ_OK) {
-                    throw std::runtime_error("Failed while decompressing gzip archive.");
-                }
+            stream.next_out = output_buffer.data();
+            stream.avail_out = static_cast<mz_uint>(output_buffer.size());
+            const auto status = mz_inflate(&stream, MZ_NO_FLUSH);
+            const auto produced = output_buffer.size() - stream.avail_out;
+            if (produced > 0) {
+                crc32_value = static_cast<std::uint32_t>(mz_crc32(crc32_value, output_buffer.data(), produced));
+                output_size += static_cast<std::uint32_t>(produced);
+                output.write(reinterpret_cast<const char *>(output_buffer.data()), static_cast<std::streamsize>(produced));
+            }
+            if (status == MZ_STREAM_END) {
+                stream_finished = true;
+                break;
+            }
+            if (status == MZ_BUF_ERROR && remaining == 0 && stream.avail_in == 0 && produced == 0) {
+                break;
+            }
+            if (status != MZ_OK) {
+                throw std::runtime_error("Failed while decompressing gzip archive.");
+            }
+            if (remaining == 0 && stream.avail_in == 0 && produced == 0) {
+                break;
             }
         }
 
@@ -619,8 +624,8 @@ void verifyTarGzArchive(const fs::path &archive_path)
     const auto temp_tar_path = archive_path.parent_path() / (archive_path.filename().string() + ".verify.tar");
     std::error_code cleanup_error;
     fs::remove_all(temp_tar_path, cleanup_error);
-    decompressGzipFile(archive_path, temp_tar_path);
     try {
+        decompressGzipFile(archive_path, temp_tar_path);
         verifyTarArchive(temp_tar_path);
         fs::remove_all(temp_tar_path, cleanup_error);
     }

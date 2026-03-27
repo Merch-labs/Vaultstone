@@ -178,6 +178,12 @@ std::vector<ArchiveEntry> collectArchiveEntries(const fs::path &root)
 
 std::vector<StoredBackup> collectStoredBackupsFromRoot(const fs::path &backup_root)
 {
+    const auto is_temporary_artifact = [](const fs::path &path) {
+        const auto filename = path.filename().string();
+        return filename.ends_with(".part") || filename.find(".part.") != std::string::npos ||
+               filename.ends_with(".verify.tar") || filename.ends_with(".extract.tar");
+    };
+
     std::vector<StoredBackup> backups;
     if (!fs::exists(backup_root)) {
         return backups;
@@ -185,6 +191,9 @@ std::vector<StoredBackup> collectStoredBackupsFromRoot(const fs::path &backup_ro
 
     for (const auto &entry : fs::directory_iterator(backup_root)) {
         if (!entry.is_regular_file() && !entry.is_directory()) {
+            continue;
+        }
+        if (is_temporary_artifact(entry.path())) {
             continue;
         }
         backups.push_back({entry.path().filename().string(), entry.path(), computePathSize(entry.path()), entry.last_write_time()});
@@ -503,6 +512,9 @@ bool BackupManager::startBackupRequest(const std::string &trigger, const std::st
         context->output_path += extension;
     }
     context->values.backup_name = context->output_path.filename().string();
+    if (trigger == "pre_restore" && pending_restore_) {
+        context->protected_paths.push_back(pending_restore_->backup.path);
+    }
 
     try {
         beginBackup(context);
@@ -1754,7 +1766,14 @@ BackupManager::FinalizeResult BackupManager::finalizeBackup(const BackupContext 
             auto existing_backups = collectStoredBackupsFromRoot(context.backup_root);
             existing_backups.erase(
                 std::remove_if(existing_backups.begin(), existing_backups.end(), [&](const StoredBackup &backup) {
-                    return backup.path == temp_output_path || backup.path == context.output_path;
+                    if (backup.path == temp_output_path || backup.path == context.output_path) {
+                        return true;
+                    }
+
+                    return std::any_of(context.protected_paths.begin(), context.protected_paths.end(),
+                                       [&](const fs::path &protected_path) {
+                        return !protected_path.empty() && fs::exists(protected_path) && fs::equivalent(backup.path, protected_path);
+                    });
                 }),
                 existing_backups.end());
             if (existing_backups.size() >= static_cast<std::size_t>(context.config.retention.max_backups)) {
