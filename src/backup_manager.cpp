@@ -258,6 +258,7 @@ std::size_t pruneBackupDirectory(const BackupConfig &config, const fs::path &bac
 void copyFilesParallel(const std::vector<std::pair<fs::path, fs::path>> &copies, const int thread_count)
 {
     std::atomic_size_t next_index{0};
+    std::atomic_bool stop_requested{false};
     std::exception_ptr exception;
     std::mutex exception_mutex;
 
@@ -268,7 +269,7 @@ void copyFilesParallel(const std::vector<std::pair<fs::path, fs::path>> &copies,
                 return;
             }
 
-            if (exception) {
+            if (stop_requested.load()) {
                 return;
             }
 
@@ -281,6 +282,7 @@ void copyFilesParallel(const std::vector<std::pair<fs::path, fs::path>> &copies,
                 std::lock_guard lock(exception_mutex);
                 if (!exception) {
                     exception = std::current_exception();
+                    stop_requested.store(true);
                 }
                 return;
             }
@@ -298,8 +300,14 @@ void copyFilesParallel(const std::vector<std::pair<fs::path, fs::path>> &copies,
         worker_thread.join();
     }
 
-    if (exception) {
-        std::rethrow_exception(exception);
+    std::exception_ptr captured_exception;
+    {
+        std::lock_guard lock(exception_mutex);
+        captured_exception = exception;
+    }
+
+    if (captured_exception) {
+        std::rethrow_exception(captured_exception);
     }
 }
 
