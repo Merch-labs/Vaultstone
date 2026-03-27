@@ -1752,6 +1752,11 @@ BackupManager::FinalizeResult BackupManager::finalizeBackup(const BackupContext 
         if (context.config.retention.max_backups > 0 &&
             context.config.retention.when_at_max_backups == "delete_newest_existing") {
             auto existing_backups = collectStoredBackupsFromRoot(context.backup_root);
+            existing_backups.erase(
+                std::remove_if(existing_backups.begin(), existing_backups.end(), [&](const StoredBackup &backup) {
+                    return backup.path == temp_output_path || backup.path == context.output_path;
+                }),
+                existing_backups.end());
             if (existing_backups.size() >= static_cast<std::size_t>(context.config.retention.max_backups)) {
                 const auto &newest_existing = existing_backups.front();
                 fs::remove_all(newest_existing.path);
