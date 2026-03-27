@@ -166,6 +166,26 @@ std::vector<ArchiveEntry> collectArchiveEntries(const fs::path &root)
     return entries;
 }
 
+std::vector<StoredBackup> collectStoredBackupsFromRoot(const fs::path &backup_root)
+{
+    std::vector<StoredBackup> backups;
+    if (!fs::exists(backup_root)) {
+        return backups;
+    }
+
+    for (const auto &entry : fs::directory_iterator(backup_root)) {
+        if (!entry.is_regular_file() && !entry.is_directory()) {
+            continue;
+        }
+        backups.push_back({entry.path().filename().string(), entry.path(), computePathSize(entry.path()), entry.last_write_time()});
+    }
+
+    std::sort(backups.begin(), backups.end(), [](const auto &left, const auto &right) {
+        return left.modified_at > right.modified_at;
+    });
+    return backups;
+}
+
 std::size_t pruneBackupDirectory(const BackupConfig &config, const fs::path &backup_root, const fs::path &keep_path)
 {
     struct BackupEntry {
@@ -449,6 +469,9 @@ bool BackupManager::startBackupRequest(const std::string &trigger, const std::st
     context->values = buildTemplateValues(trigger, requested_by, label);
     context->resolved_targets = resolveTargets(config_, context->values);
     if (!hasEnoughFreeSpace(context->server_root / config_.backup_directory, error)) {
+        return false;
+    }
+    if (!enforceMaxBackupPolicyBeforeBackup(context->config, context->backup_root, error)) {
         return false;
     }
     context->values.backup_name = sanitizeName(renderTemplate(config_.name_template, context->values));
@@ -1335,6 +1358,25 @@ bool BackupManager::shouldAutoPruneAfterBackup(const std::string &trigger) const
     return config_.prune_after_backup;
 }
 
+bool BackupManager::enforceMaxBackupPolicyBeforeBackup(const BackupConfig &config, const fs::path &backup_root,
+                                                       std::string &error) const
+{
+    if (config.retention.max_backups <= 0 || config.retention.when_at_max_backups != "refuse_new_backup") {
+        error.clear();
+        return true;
+    }
+
+    const auto backups = collectStoredBackupsFromRoot(backup_root);
+    if (backups.size() < static_cast<std::size_t>(config.retention.max_backups)) {
+        error.clear();
+        return true;
+    }
+
+    error = fmt::format("Maximum backup count ({}) has been reached. Refusing to create a new backup.",
+                        config.retention.max_backups);
+    return false;
+}
+
 fs::path BackupManager::getServerRoot() const
 {
     return plugin_.getDataFolder().parent_path().parent_path();
@@ -1532,23 +1574,7 @@ std::vector<BackupTargetConfig> BackupManager::resolveTargets(const BackupConfig
 
 std::vector<StoredBackup> BackupManager::collectBackups(const BackupConfig &config) const
 {
-    const auto backup_root = getServerRoot() / config.backup_directory;
-    std::vector<StoredBackup> backups;
-    if (!fs::exists(backup_root)) {
-        return backups;
-    }
-
-    for (const auto &entry : fs::directory_iterator(backup_root)) {
-        if (!entry.is_regular_file() && !entry.is_directory()) {
-            continue;
-        }
-        backups.push_back({entry.path().filename().string(), entry.path(), computePathSize(entry.path()), entry.last_write_time()});
-    }
-
-    std::sort(backups.begin(), backups.end(), [](const auto &left, const auto &right) {
-        return left.modified_at > right.modified_at;
-    });
-    return backups;
+    return collectStoredBackupsFromRoot(getServerRoot() / config.backup_directory);
 }
 
 std::optional<StoredBackup> BackupManager::findBackup(const std::string &selector) const
@@ -1704,6 +1730,15 @@ BackupManager::FinalizeResult BackupManager::finalizeBackup(const BackupContext 
 
     try {
         fs::create_directories(context.backup_root);
+
+        if (context.config.retention.max_backups > 0 &&
+            context.config.retention.when_at_max_backups == "delete_newest_existing") {
+            auto existing_backups = collectStoredBackupsFromRoot(context.backup_root);
+            if (existing_backups.size() >= static_cast<std::size_t>(context.config.retention.max_backups)) {
+                const auto &newest_existing = existing_backups.front();
+                fs::remove_all(newest_existing.path);
+            }
+        }
 
         const auto finished_at = std::chrono::system_clock::now();
         const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished_at - context.started_at);

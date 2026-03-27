@@ -14,6 +14,7 @@ struct BackupTargetConfig {
 struct RetentionConfig {
     int max_backups = 20;
     int min_backups_to_keep = 1;
+    std::string when_at_max_backups = "prune_oldest";
     int max_age_days = 14;
     int max_total_size_mb = 10240;
     bool prune_on_startup = false;

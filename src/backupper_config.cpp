@@ -35,6 +35,7 @@ RetentionConfig readRetention(const json &value, const RetentionConfig &defaults
     }
     retention.max_backups = value.value("max_backups", retention.max_backups);
     retention.min_backups_to_keep = value.value("min_backups_to_keep", retention.min_backups_to_keep);
+    retention.when_at_max_backups = value.value("when_at_max_backups", retention.when_at_max_backups);
     retention.max_age_days = value.value("max_age_days", retention.max_age_days);
     retention.max_total_size_mb = value.value("max_total_size_mb", retention.max_total_size_mb);
     retention.prune_on_startup = value.value("prune_on_startup", retention.prune_on_startup);
@@ -135,6 +136,7 @@ json toJson(const BackupConfig &config)
         {"retention",
          {{"max_backups", config.retention.max_backups},
           {"min_backups_to_keep", config.retention.min_backups_to_keep},
+          {"when_at_max_backups", config.retention.when_at_max_backups},
           {"max_age_days", config.retention.max_age_days},
           {"max_total_size_mb", config.retention.max_total_size_mb},
           {"prune_on_startup", config.retention.prune_on_startup},
@@ -201,6 +203,12 @@ void validateConfig(const BackupConfig &config)
     }
     if (config.retention.min_backups_to_keep < 0) {
         throw std::runtime_error("retention.min_backups_to_keep must be at least 0.");
+    }
+    if (config.retention.when_at_max_backups != "prune_oldest" &&
+        config.retention.when_at_max_backups != "refuse_new_backup" &&
+        config.retention.when_at_max_backups != "delete_newest_existing") {
+        throw std::runtime_error(
+            "retention.when_at_max_backups must be 'prune_oldest', 'refuse_new_backup', or 'delete_newest_existing'.");
     }
     if (config.retention.max_backups > 0 && config.retention.min_backups_to_keep > config.retention.max_backups) {
         throw std::runtime_error("retention.min_backups_to_keep cannot be greater than retention.max_backups.");

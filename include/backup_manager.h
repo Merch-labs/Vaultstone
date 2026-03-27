@@ -177,6 +177,8 @@ private:
     [[nodiscard]] bool canRestoreSelector(const std::string &selector, std::string &error) const;
     [[nodiscard]] bool hasEnoughFreeSpace(const std::filesystem::path &path, std::string &error) const;
     [[nodiscard]] bool shouldAutoPruneAfterBackup(const std::string &trigger) const;
+    bool enforceMaxBackupPolicyBeforeBackup(const BackupConfig &config, const std::filesystem::path &backup_root,
+                                            std::string &error) const;
     [[nodiscard]] std::filesystem::path getServerRoot() const;
     [[nodiscard]] std::filesystem::path getConfigPath() const;
     [[nodiscard]] std::filesystem::path getStatePath() const;

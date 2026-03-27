@@ -62,6 +62,8 @@ Useful schedule options:
 Useful retention options:
 
 - `retention.min_backups_to_keep`: hard floor that pruning will not cross
+- `retention.when_at_max_backups`: choose `prune_oldest`, `refuse_new_backup`, or `delete_newest_existing`
+  `prune_oldest` keeps the current behavior, `refuse_new_backup` aborts a new backup when the cap is already reached, and `delete_newest_existing` evicts the newest existing backup before writing the new one
 - `retention.auto_prune_after_manual_backup`: prune automatically after manual backups
 - `retention.auto_prune_after_scheduled_backup`: prune automatically after scheduled backups
 - `retention.auto_prune_after_pre_restore_backup`: prune automatically after safety backups taken before restore
