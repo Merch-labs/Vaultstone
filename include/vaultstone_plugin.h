@@ -6,7 +6,7 @@
 
 #include <memory>
 
-class BackupperPlugin : public endstone::Plugin {
+class VaultstonePlugin : public endstone::Plugin {
 public:
     void onLoad() override;
     void onEnable() override;

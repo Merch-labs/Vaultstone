@@ -75,8 +75,9 @@ endstone_add_plugin(
     ${PROJECT_NAME}
     src/archive_writer.cpp
     src/backup_manager.cpp
-    src/backupper_config.cpp
-    src/backupper_plugin.cpp
+    src/vaultstone_config.cpp
+    src/vaultstone_plugin.cpp
 )
+set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "vaultstone" PREFIX "")
 target_include_directories(${PROJECT_NAME} PRIVATE include ${croncpp_SOURCE_DIR}/include)
 target_link_libraries(${PROJECT_NAME} PRIVATE nlohmann_json::nlohmann_json miniz)

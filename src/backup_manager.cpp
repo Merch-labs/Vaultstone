@@ -1,7 +1,7 @@
 #include "backup_manager.h"
 
 #include "archive_writer.h"
-#include "backupper_plugin.h"
+#include "vaultstone_plugin.h"
 
 #include <algorithm>
 #include <array>
@@ -362,7 +362,7 @@ bool pathEscapesRoot(const fs::path &relative_path)
 
 }  // namespace
 
-BackupManager::BackupManager(BackupperPlugin &plugin) : plugin_(plugin) {}
+BackupManager::BackupManager(VaultstonePlugin &plugin) : plugin_(plugin) {}
 
 void BackupManager::onEnable()
 {

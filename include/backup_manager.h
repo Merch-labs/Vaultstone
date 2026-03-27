@@ -1,7 +1,7 @@
 #pragma once
 
 #include "archive_writer.h"
-#include "backupper_config.h"
+#include "vaultstone_config.h"
 
 #include <chrono>
 #include <filesystem>
@@ -14,7 +14,7 @@
 #include <endstone/command/command_sender.h>
 #include <endstone/scheduler/task.h>
 
-class BackupperPlugin;
+class VaultstonePlugin;
 
 namespace backupper {
 
@@ -41,7 +41,7 @@ struct StoredBackup {
 
 class BackupManager {
 public:
-    explicit BackupManager(BackupperPlugin &plugin);
+    explicit BackupManager(VaultstonePlugin &plugin);
 
     void onEnable();
     void onDisable();
@@ -202,7 +202,7 @@ private:
     static FinalizeResult finalizeBackup(const BackupContext &context, const SnapshotResult &snapshot);
     static RestoreResult performRestore(const RestoreContext &context);
 
-    BackupperPlugin &plugin_;
+    VaultstonePlugin &plugin_;
     BackupConfig config_;
     std::shared_ptr<BackupContext> current_;
     std::shared_ptr<RestoreContext> restore_current_;

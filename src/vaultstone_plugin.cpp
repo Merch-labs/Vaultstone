@@ -1,4 +1,4 @@
-#include "backupper_plugin.h"
+#include "vaultstone_plugin.h"
 
 namespace {
 
@@ -32,7 +32,7 @@ std::string joinLabel(const std::vector<std::string> &args, const std::size_t st
 
 }  // namespace
 
-ENDSTONE_PLUGIN("vaultstone", "0.1.0", BackupperPlugin)
+ENDSTONE_PLUGIN("vaultstone", "0.1.0", VaultstonePlugin)
 {
     prefix = "Vaultstone";
     description = "Configurable hot-backup plugin for Endstone Bedrock servers.";
@@ -92,12 +92,12 @@ ENDSTONE_PLUGIN("vaultstone", "0.1.0", BackupperPlugin)
         .default_(endstone::PermissionDefault::Operator);
 }
 
-void BackupperPlugin::onLoad()
+void VaultstonePlugin::onLoad()
 {
     getLogger().info("Loading Vaultstone.");
 }
 
-void BackupperPlugin::onEnable()
+void VaultstonePlugin::onEnable()
 {
     std::filesystem::create_directories(getDataFolder());
     manager_ = std::make_unique<backupper::BackupManager>(*this);
@@ -105,7 +105,7 @@ void BackupperPlugin::onEnable()
     getLogger().info("Vaultstone enabled with data folder '{}'.", getDataFolder().string());
 }
 
-void BackupperPlugin::onDisable()
+void VaultstonePlugin::onDisable()
 {
     if (manager_) {
         manager_->onDisable();
@@ -113,7 +113,7 @@ void BackupperPlugin::onDisable()
     getLogger().info("Vaultstone disabled.");
 }
 
-bool BackupperPlugin::onCommand(endstone::CommandSender &sender, const endstone::Command &command,
+bool VaultstonePlugin::onCommand(endstone::CommandSender &sender, const endstone::Command &command,
                                 const std::vector<std::string> &args)
 {
     if (command.getName() != "vaultstone" && command.getName() != "backup") {
