@@ -1727,18 +1727,10 @@ BackupManager::SnapshotResult BackupManager::createSnapshot(const BackupContext 
 BackupManager::FinalizeResult BackupManager::finalizeBackup(const BackupContext &context, const SnapshotResult &snapshot)
 {
     FinalizeResult result;
+    fs::path temp_output_path;
 
     try {
         fs::create_directories(context.backup_root);
-
-        if (context.config.retention.max_backups > 0 &&
-            context.config.retention.when_at_max_backups == "delete_newest_existing") {
-            auto existing_backups = collectStoredBackupsFromRoot(context.backup_root);
-            if (existing_backups.size() >= static_cast<std::size_t>(context.config.retention.max_backups)) {
-                const auto &newest_existing = existing_backups.front();
-                fs::remove_all(newest_existing.path);
-            }
-        }
 
         const auto finished_at = std::chrono::system_clock::now();
         const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finished_at - context.started_at);
@@ -1761,21 +1753,33 @@ BackupManager::FinalizeResult BackupManager::finalizeBackup(const BackupContext 
         }
 
         const auto manifest_text = context.config.write_manifest ? manifest.dump(4) : std::string{};
+        temp_output_path = context.backup_root / (context.output_path.filename().string() + ".part");
+        fs::remove_all(temp_output_path);
 
         if (context.config.archive_format == "zip") {
-            writeZipArchive(context.output_path, snapshot.archive_entries, manifest_text, context.config.compression_level,
+            writeZipArchive(temp_output_path, snapshot.archive_entries, manifest_text, context.config.compression_level,
                             context.config.verify_archive_after_creation);
         }
         else {
-            fs::remove_all(context.output_path);
-            fs::create_directories(context.output_path.parent_path());
-            fs::rename(snapshot.payload_root, context.output_path);
+            fs::create_directories(temp_output_path.parent_path());
+            fs::rename(snapshot.payload_root, temp_output_path);
             if (!manifest_text.empty()) {
-                std::ofstream output(context.output_path / "backupper-manifest.json");
+                std::ofstream output(temp_output_path / "backupper-manifest.json");
                 output << manifest_text << '\n';
             }
         }
 
+        if (context.config.retention.max_backups > 0 &&
+            context.config.retention.when_at_max_backups == "delete_newest_existing") {
+            auto existing_backups = collectStoredBackupsFromRoot(context.backup_root);
+            if (existing_backups.size() >= static_cast<std::size_t>(context.config.retention.max_backups)) {
+                const auto &newest_existing = existing_backups.front();
+                fs::remove_all(newest_existing.path);
+            }
+        }
+
+        fs::remove_all(context.output_path);
+        fs::rename(temp_output_path, context.output_path);
         fs::remove_all(context.staging_root);
 
         std::size_t removed_count = 0;
@@ -1807,6 +1811,10 @@ BackupManager::FinalizeResult BackupManager::finalizeBackup(const BackupContext 
         return result;
     }
     catch (const std::exception &exception) {
+        if (!temp_output_path.empty()) {
+            std::error_code cleanup_error;
+            fs::remove_all(temp_output_path, cleanup_error);
+        }
         result.ok = false;
         result.error = exception.what();
         return result;
