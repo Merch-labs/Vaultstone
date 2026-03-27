@@ -18,71 +18,83 @@ bool parsePositiveInt(const std::string &value, int &parsed)
     }
 }
 
+std::string joinLabel(const std::vector<std::string> &args, const std::size_t start_index)
+{
+    std::string label;
+    for (std::size_t index = start_index; index < args.size(); ++index) {
+        if (!label.empty()) {
+            label.push_back(' ');
+        }
+        label.append(args[index]);
+    }
+    return label;
+}
+
 }  // namespace
 
-ENDSTONE_PLUGIN("backupper", "0.1.0", BackupperPlugin)
+ENDSTONE_PLUGIN("vaultstone", "0.1.0", BackupperPlugin)
 {
-    prefix = "Backupper";
+    prefix = "Vaultstone";
     description = "Configurable hot-backup plugin for Endstone Bedrock servers.";
-    authors = {"Backupper contributors"};
+    authors = {"Vaultstone contributors"};
 
-    command("backupper")
+    command("vaultstone")
         .description("Manage world backups.")
-        .usages("/backupper status", "/backupper backup [label: string]", "/backupper restore <name|latest>",
-                "/backupper reload", "/backupper list [limit: int]", "/backupper prune", "/backupper delete <name: string>",
-                "/backupper schedule <status|start|stop>")
+        .usages("/vaultstone status", "/vaultstone create [label: string]", "/vaultstone restore <name|latest>",
+                "/vaultstone reload", "/vaultstone list [limit: int]", "/vaultstone prune",
+                "/vaultstone delete <name: string>", "/vaultstone schedule <status|start|stop>")
         .aliases("backup")
-        .permissions("backupper.command.status", "backupper.command.backup", "backupper.command.reload",
-                     "backupper.command.restore", "backupper.command.list", "backupper.command.prune",
-                     "backupper.command.delete", "backupper.command.schedule");
+        .permissions("vaultstone.command.status", "vaultstone.command.create", "vaultstone.command.reload",
+                     "vaultstone.command.restore", "vaultstone.command.list", "vaultstone.command.prune",
+                     "vaultstone.command.delete", "vaultstone.command.schedule");
 
-    permission("backupper.command")
-        .description("Allows access to all Backupper commands.")
-        .children("backupper.command.status", true)
-        .children("backupper.command.backup", true)
-        .children("backupper.command.reload", true)
-        .children("backupper.command.restore", true)
-        .children("backupper.command.list", true)
-        .children("backupper.command.prune", true)
-        .children("backupper.command.delete", true)
-        .children("backupper.command.schedule", true);
+    permission("vaultstone.command")
+        .description("Allows access to all Vaultstone commands.")
+        .children("vaultstone.command.status", true)
+        .children("vaultstone.command.create", true)
+        .children("vaultstone.command.reload", true)
+        .children("vaultstone.command.restore", true)
+        .children("vaultstone.command.list", true)
+        .children("vaultstone.command.prune", true)
+        .children("vaultstone.command.delete", true)
+        .children("vaultstone.command.schedule", true);
 
-    permission("backupper.command.status")
-        .description("Allows viewing Backupper status.")
+    permission("vaultstone.command.status")
+        .description("Allows viewing Vaultstone status.")
         .default_(endstone::PermissionDefault::Operator);
 
-    permission("backupper.command.backup")
+    permission("vaultstone.command.create")
         .description("Allows starting a manual backup.")
         .default_(endstone::PermissionDefault::Operator);
 
-    permission("backupper.command.reload")
-        .description("Allows reloading the Backupper config.")
+    permission("vaultstone.command.reload")
+        .description("Allows reloading the Vaultstone config.")
         .default_(endstone::PermissionDefault::Operator);
 
-    permission("backupper.command.restore")
+    permission("vaultstone.command.restore")
         .description("Allows restoring a stored backup.")
         .default_(endstone::PermissionDefault::Operator);
 
-    permission("backupper.command.list")
+    permission("vaultstone.command.list")
         .description("Allows listing available backups.")
         .default_(endstone::PermissionDefault::Operator);
 
-    permission("backupper.command.prune")
+    permission("vaultstone.command.prune")
         .description("Allows pruning old backups.")
         .default_(endstone::PermissionDefault::Operator);
 
-    permission("backupper.command.delete")
+    permission("vaultstone.command.delete")
         .description("Allows deleting specific backups.")
         .default_(endstone::PermissionDefault::Operator);
 
-    permission("backupper.command.schedule")
+    permission("vaultstone.command.schedule")
         .description("Allows managing the automatic backup scheduler.")
         .default_(endstone::PermissionDefault::Operator);
 }
 
 void BackupperPlugin::onLoad()
 {
-    getLogger().info("Loading Backupper.");
+    getLogger().info("Loading Vaultstone.");
 }
 
 void BackupperPlugin::onEnable()
@@ -90,7 +102,7 @@ void BackupperPlugin::onEnable()
     std::filesystem::create_directories(getDataFolder());
     manager_ = std::make_unique<backupper::BackupManager>(*this);
     manager_->onEnable();
-    getLogger().info("Backupper enabled with data folder '{}'.", getDataFolder().string());
+    getLogger().info("Vaultstone enabled with data folder '{}'.", getDataFolder().string());
 }
 
 void BackupperPlugin::onDisable()
@@ -98,13 +110,13 @@ void BackupperPlugin::onDisable()
     if (manager_) {
         manager_->onDisable();
     }
-    getLogger().info("Backupper disabled.");
+    getLogger().info("Vaultstone disabled.");
 }
 
 bool BackupperPlugin::onCommand(endstone::CommandSender &sender, const endstone::Command &command,
                                 const std::vector<std::string> &args)
 {
-    if (command.getName() != "backupper") {
+    if (command.getName() != "vaultstone" && command.getName() != "backup") {
         return false;
     }
 
@@ -114,15 +126,9 @@ bool BackupperPlugin::onCommand(endstone::CommandSender &sender, const endstone:
         return true;
     }
 
-    if (subcommand == "backup") {
+    if (subcommand == "create" || subcommand == "backup") {
         std::string error;
-        std::string label;
-        if (args.size() > 1) {
-            label = args[1];
-            for (std::size_t index = 2; index < args.size(); ++index) {
-                label.append(" ").append(args[index]);
-            }
-        }
+        const auto label = joinLabel(args, 1);
         if (!manager_->startManualBackup(sender.getName(), label, error)) {
             sender.sendErrorMessage("Unable to start backup: {}", error);
             return true;
@@ -137,13 +143,13 @@ bool BackupperPlugin::onCommand(endstone::CommandSender &sender, const endstone:
             sender.sendErrorMessage("Reload failed: {}", error);
             return true;
         }
-        sender.sendMessage("Backupper config reloaded.");
+        sender.sendMessage("Vaultstone config reloaded.");
         return true;
     }
 
     if (subcommand == "restore") {
         if (args.size() < 2) {
-            sender.sendErrorMessage("Usage: /backupper restore <name|latest>");
+            sender.sendErrorMessage("Usage: /vaultstone restore <name|latest>");
             return true;
         }
         std::string error;
@@ -160,7 +166,7 @@ bool BackupperPlugin::onCommand(endstone::CommandSender &sender, const endstone:
         if (args.size() > 1) {
             int parsed_limit = 0;
             if (!parsePositiveInt(args[1], parsed_limit)) {
-                sender.sendErrorMessage("Usage: /backupper list [limit: positive integer]");
+                sender.sendErrorMessage("Usage: /vaultstone list [limit: positive integer]");
                 return true;
             }
             limit = static_cast<std::size_t>(parsed_limit);
@@ -190,7 +196,7 @@ bool BackupperPlugin::onCommand(endstone::CommandSender &sender, const endstone:
 
     if (subcommand == "delete") {
         if (args.size() < 2) {
-            sender.sendErrorMessage("Usage: /backupper delete <name>");
+            sender.sendErrorMessage("Usage: /vaultstone delete <name>");
             return true;
         }
         std::string error;
@@ -225,10 +231,10 @@ bool BackupperPlugin::onCommand(endstone::CommandSender &sender, const endstone:
             sender.sendMessage("Scheduler stopped.");
             return true;
         }
-        sender.sendErrorMessage("Usage: /backupper schedule <status|start|stop>");
+        sender.sendErrorMessage("Usage: /vaultstone schedule <status|start|stop>");
         return true;
     }
 
-    sender.sendErrorMessage("Usage: /backupper <status|backup|restore|reload|list|prune|delete|schedule>");
+    sender.sendErrorMessage("Usage: /vaultstone <status|create|restore|reload|list|prune|delete|schedule>");
     return true;
 }

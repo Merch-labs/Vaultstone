@@ -573,7 +573,7 @@ bool BackupManager::startRestoreRequestNow(const std::string &requested_by, cons
 
 void BackupManager::sendStatus(endstone::CommandSender &sender) const
 {
-    sender.sendMessage("Backupper status: {}", isBusy() ? "running" : "idle");
+    sender.sendMessage("Vaultstone status: {}", isBusy() ? "running" : "idle");
     sender.sendMessage("Config: {}", getConfigPath().string());
     sender.sendMessage("Backup directory: {}", config_.backup_directory);
     sender.sendMessage("Format: {}", config_.archive_format);
@@ -1740,7 +1740,7 @@ BackupManager::FinalizeResult BackupManager::finalizeBackup(const BackupContext 
             fs::create_directories(temp_output_path.parent_path());
             fs::rename(snapshot.payload_root, temp_output_path);
             if (!manifest_text.empty()) {
-                std::ofstream output(temp_output_path / "backupper-manifest.json");
+                std::ofstream output(temp_output_path / "vaultstone-manifest.json");
                 output << manifest_text << '\n';
             }
         }
@@ -1819,7 +1819,7 @@ BackupManager::RestoreResult BackupManager::performRestore(const RestoreContext 
             extractArchive(context.backup.path, archive_format, extraction_root);
         }
 
-        const auto manifest_path = extraction_root / "backupper-manifest.json";
+        const auto manifest_path = extraction_root / "vaultstone-manifest.json";
         if (!fs::exists(manifest_path)) {
             throw std::runtime_error("Backup manifest is missing. This backup cannot be restored safely.");
         }

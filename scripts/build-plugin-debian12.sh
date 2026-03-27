@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE_TAG="backupper-build:debian12"
+IMAGE_TAG="vaultstone-build:debian12"
 
 docker build -f "${ROOT_DIR}/docker/Dockerfile.debian12-build" -t "${IMAGE_TAG}" "${ROOT_DIR}"
 
@@ -20,4 +20,4 @@ docker run --rm \
   '
 
 echo "Built Debian 12 compatible plugin at:"
-echo "  ${ROOT_DIR}/build-debian12/endstone_endstone_backupper.so"
+echo "  ${ROOT_DIR}/build-debian12/vaultstone.so"

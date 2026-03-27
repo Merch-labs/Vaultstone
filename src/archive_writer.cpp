@@ -273,7 +273,7 @@ void writeTarArchive(const fs::path &archive_path, const std::vector<ArchiveEntr
     }
 
     if (!manifest_json.empty()) {
-        writeTarEntryHeader(output, "backupper-manifest.json", manifest_json.size(), '0');
+        writeTarEntryHeader(output, "vaultstone-manifest.json", manifest_json.size(), '0');
         output.write(manifest_json.data(), static_cast<std::streamsize>(manifest_json.size()));
         writeTarPadding(output, manifest_json.size());
     }
@@ -649,7 +649,7 @@ void writeZipArchive(const fs::path &archive_path, const std::vector<ArchiveEntr
         }
 
         if (!manifest_json.empty()) {
-            if (!mz_zip_writer_add_mem(&archive, "backupper-manifest.json", manifest_json.data(), manifest_json.size(),
+            if (!mz_zip_writer_add_mem(&archive, "vaultstone-manifest.json", manifest_json.data(), manifest_json.size(),
                                        compression_level)) {
                 throw std::runtime_error("Failed to add backup manifest to archive.");
             }
